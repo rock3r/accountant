@@ -81,3 +81,16 @@ type Provider interface {
 type Refresher interface {
 	Refresh(ctx context.Context, cred []byte) (newCred []byte, err error)
 }
+
+// RequestShaper is implemented by providers that can rewrite a request
+// body for clients that are not the provider's native client. For
+// Anthropic, subscription credentials are only accepted when the request
+// looks like it came from Claude Code, so the shaper prepends Claude
+// Code's first system block. The proxy applies it only to clients
+// flagged claude_code_compat; native Claude Code traffic stays
+// byte-identical.
+type RequestShaper interface {
+	// ShapeRequest returns the body to send upstream. Bodies that need
+	// no shaping must be returned byte-for-byte unchanged.
+	ShapeRequest(body []byte) ([]byte, error)
+}

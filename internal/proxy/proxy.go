@@ -1,7 +1,8 @@
 // Package proxy is the Anthropic-format pass-through on loopback. It swaps
 // the client's key for the chosen account's token and streams bytes both
-// ways without re-encoding. It never parses or re-serializes bodies and
-// never logs credentials or bodies.
+// ways without re-encoding. Bodies pass through byte-identical, except for
+// clients flagged claude_code_compat whose request body is reshaped by the
+// provider's RequestShaper. It never logs credentials or bodies.
 package proxy
 
 import (
@@ -129,7 +130,7 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, providerID, path s
 
 	// Client key check: x-api-key if present, else the Bearer token; an
 	// invalid chosen key is a 401 with no fall-through to the other header.
-	clientID, ok := checkClientKey(r, cfg)
+	client, ok := checkClientKey(r, cfg)
 	if !ok {
 		writeAPIError(w, http.StatusUnauthorized, "authentication_error", "invalid client key")
 		return
@@ -155,9 +156,22 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, providerID, path s
 		}
 	}
 
+	// Clients flagged claude_code_compat get their body reshaped once,
+	// before the failover loop, so every attempt sends the same bytes.
+	if client.ClaudeCodeCompat && len(body) > 0 {
+		if shaper, ok := prov.(provider.RequestShaper); ok {
+			shaped, err := shaper.ShapeRequest(body)
+			if err != nil {
+				p.log.Info("request shaping failed, passing through", "client", client.ID, "error", err.Error())
+			} else {
+				body = shaped
+			}
+		}
+	}
+
 	sessionKey := prov.SessionKey(r)
 	if sessionKey == "" {
-		sessionKey = "client:" + clientID
+		sessionKey = "client:" + client.ID
 	}
 	logAttrs := []any{"session", router.HashSession(sessionKey), "path", path}
 
@@ -314,9 +328,10 @@ func (p *Proxy) upstreamClient(cfg *config.Config) *http.Client {
 	return p.httpClient
 }
 
-// checkClientKey validates the request's client key and returns its ID.
-// x-api-key wins when present; no fall-through on an invalid chosen key.
-func checkClientKey(r *http.Request, cfg *config.Config) (string, bool) {
+// checkClientKey validates the request's client key and returns the
+// matched client. x-api-key wins when present; no fall-through on an
+// invalid chosen key.
+func checkClientKey(r *http.Request, cfg *config.Config) (config.Client, bool) {
 	key := r.Header.Get("x-api-key")
 	if key == "" {
 		auth := r.Header.Get("Authorization")
@@ -325,7 +340,7 @@ func checkClientKey(r *http.Request, cfg *config.Config) (string, bool) {
 		}
 	}
 	if key == "" {
-		return "", false
+		return config.Client{}, false
 	}
 	sum := sha256.Sum256([]byte(key))
 	for _, c := range cfg.Clients {
@@ -334,10 +349,10 @@ func checkClientKey(r *http.Request, cfg *config.Config) (string, bool) {
 			continue
 		}
 		if subtle.ConstantTimeCompare(sum[:], stored) == 1 {
-			return c.ID, true
+			return c, true
 		}
 	}
-	return "", false
+	return config.Client{}, false
 }
 
 // HashKey hashes a client key for storage.

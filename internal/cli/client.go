@@ -12,18 +12,26 @@ import (
 
 func cmdClient(args []string, paths config.Paths, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: accountant client add|list|remove ...")
+		fmt.Fprintln(stderr, "usage: accountant client add|list|update|remove ...")
 		return 2
 	}
 	switch args[0] {
 	case "add":
-		if len(args) != 2 {
-			fmt.Fprintln(stderr, "usage: accountant client add ID")
+		id, compat, ok := parseClientFlags(args[1:], false)
+		if !ok {
+			fmt.Fprintln(stderr, "usage: accountant client add ID [--claude-code-compat]")
 			return 2
 		}
-		return clientAdd(args[1], paths, stdout, stderr)
+		return clientAdd(id, compat, paths, stdout, stderr)
 	case "list":
 		return clientList(paths, stdout, stderr)
+	case "update":
+		id, compat, ok := parseClientFlags(args[1:], true)
+		if !ok {
+			fmt.Fprintln(stderr, "usage: accountant client update ID --claude-code-compat|--no-claude-code-compat")
+			return 2
+		}
+		return clientUpdate(id, compat, paths, stdout, stderr)
 	case "remove":
 		if len(args) != 2 {
 			fmt.Fprintln(stderr, "usage: accountant client remove ID")
@@ -36,7 +44,31 @@ func cmdClient(args []string, paths config.Paths, stdout, stderr io.Writer) int 
 	}
 }
 
-func clientAdd(id string, paths config.Paths, stdout, stderr io.Writer) int {
+// parseClientFlags parses "ID [--claude-code-compat|--no-claude-code-compat]".
+// For update (requireFlag), a compat flag is mandatory; for add it is
+// optional and defaults to false.
+func parseClientFlags(args []string, requireFlag bool) (id string, compat bool, ok bool) {
+	flagSeen := false
+	for _, a := range args {
+		switch a {
+		case "--claude-code-compat":
+			compat, flagSeen = true, true
+		case "--no-claude-code-compat":
+			compat, flagSeen = false, true
+		default:
+			if id != "" || len(a) == 0 || a[0] == '-' {
+				return "", false, false
+			}
+			id = a
+		}
+	}
+	if id == "" || (requireFlag && !flagSeen) {
+		return "", false, false
+	}
+	return id, compat, true
+}
+
+func clientAdd(id string, compat bool, paths config.Paths, stdout, stderr io.Writer) int {
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
@@ -47,19 +79,45 @@ func clientAdd(id string, paths config.Paths, stdout, stderr io.Writer) int {
 		if c.FindClient(id) != nil {
 			return fmt.Errorf("client %q already exists", id)
 		}
-		c.Clients = append(c.Clients, config.Client{ID: id, KeySHA256: proxy.HashKey(key)})
+		c.Clients = append(c.Clients, config.Client{ID: id, KeySHA256: proxy.HashKey(key), ClaudeCodeCompat: compat})
 		return nil
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
+	compatNote := ""
+	if compat {
+		compatNote = "\nClaude Code compatibility shaping is ON for this client (for clients that are not Claude Code).\n"
+	}
 	fmt.Fprintf(stdout, `Client %q created. Key (shown once, store it now):
 
   %s
 
 Only the SHA-256 hash is stored; accountant cannot show it again.
-`, id, key)
+%s`, id, key, compatNote)
+	return 0
+}
+
+// clientUpdate flips the compat flag without rotating the key.
+func clientUpdate(id string, compat bool, paths config.Paths, stdout, stderr io.Writer) int {
+	err := config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
+		cl := c.FindClient(id)
+		if cl == nil {
+			return fmt.Errorf("no client %q", id)
+		}
+		cl.ClaudeCodeCompat = compat
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	state := "off"
+	if compat {
+		state = "on"
+	}
+	fmt.Fprintf(stdout, "Client %q updated: claude-code-compat %s.\n", id, state)
 	return 0
 }
 
@@ -74,7 +132,11 @@ func clientList(paths config.Paths, stdout, stderr io.Writer) int {
 		return 0
 	}
 	for _, c := range cfg.Clients {
-		fmt.Fprintln(stdout, c.ID)
+		if c.ClaudeCodeCompat {
+			fmt.Fprintf(stdout, "%s (claude-code-compat)\n", c.ID)
+		} else {
+			fmt.Fprintln(stdout, c.ID)
+		}
 	}
 	return 0
 }

@@ -46,7 +46,8 @@ V1 is done when all of these hold on the owner's Mac:
 6. `accountant status` shows, per account: 5-hour and weekly use, reset times,
    cooldown state, and how many sessions are pinned.
 7. A 3P app that speaks the Anthropic Messages format works against the same proxy
-   with a client key.
+   with a client key; clients that are not Claude Code use a `claude_code_compat`
+   key so their requests pass the system-prompt gate (S1 follow-up).
 8. The fake-upstream test suite in the validation plan passes. Request bodies pass
    through byte-identical in every test.
 
@@ -269,6 +270,12 @@ rate-limits too). Correctness must never depend on the poller.
   prints the exports. Documented losses in this mode: no Remote Control, no
   claude.ai connectors, no `/login` account display. Local MCP servers still work.
 - 3P Anthropic-format apps: same base URL; client key as `x-api-key` or Bearer.
+  Clients that are not Claude Code must be created with
+  `accountant client add ID --claude-code-compat` so the proxy prepends Claude
+  Code's first system block to their requests (the gate from S1). The flag is
+  per client key and can be flipped with `accountant client update` without
+  rotating the key. Compat shaping is idempotent: a body that already carries
+  the Claude Code system block is forwarded byte-identical.
 - Client keys: `accountant` generates one per client or machine, stores only a
   SHA-256 hash, and checks in constant time. Keys exist even on loopback, so the LAN
   phase needs no new auth design.
@@ -284,7 +291,10 @@ rate-limits too). Correctness must never depend on the poller.
   the one merge in flow step 3 happens inside the provider's `RewriteRequest` (it
   is an auth-related adjustment there, and only there). Strip hop-by-hop headers.
   Change only the credential headers, exactly as flow step 3 says. Never parse or
-  re-serialize the JSON body. Set `DisableCompression: true`
+  re-serialize the JSON body — with one exception: for clients flagged
+  `claude_code_compat`, the provider's `RequestShaper` prepends Claude Code's
+  first system block to the body (idempotent; already-shaped bodies stay
+  byte-identical). Set `DisableCompression: true`
   on the upstream `http.Transport`, so Go never adds its own `gzip` handling or
   transparently decodes a response and mutates its bytes.
 - Streaming: no full-body buffering on the response path for 2xx responses; flush
@@ -517,6 +527,10 @@ the upstream's real 429 shape match this design.
   covers every other value); whether `/usage` inside Claude Code
   stays meaningful behind the proxy (S2); whether Desktop 3P mode is acceptable day
   to day (S3); whether the Codex apps expose any base-URL surface at all (S4).
+- **Gate drift.** Compat clients depend on Anthropic's system-prompt gate keeping
+  its current shape. If the gate tightens, compat clients degrade to upstream
+  429s (classified Transient — no quota cooldown, see S1); Claude Code traffic
+  is unaffected because it is shaped correctly by the client itself.
 
 ## Sources
 

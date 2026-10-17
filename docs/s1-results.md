@@ -108,3 +108,26 @@ body: {"type":"error","error":{"type":"rate_limit_error",
   system prompt begins with an `x-anthropic-billing-header` text block.
 - Confirms the proxy's beta-merge rule ("append `oauth-2025-04-20` only if absent")
   is a no-op for Claude Code and matters only for 3P clients.
+
+## Follow-up probes: exact gate semantics (2026-10-19, secondary token, direct API)
+
+The system-prompt gate on `/v1/messages` is an **exact-block match**, not a
+substring or fuzzy check:
+
+| System prompt sent | Result |
+|---|---|
+| Any non-Claude-Code text (e.g. a Pi prompt) | 429 |
+| `"You are Claude Code, Anthropic's official CLI for Claude."` as the only block, as a plain string, or followed by other blocks | 200 |
+| Billing-header block first, Claude Code block second (real Claude Code shape) | 200 |
+| Claude Code block second, anything else first | **429** |
+| Claude Code text embedded inside a larger block | **429** |
+
+Also: headers are not gated (curl UA and a minimal `anthropic-beta` pass),
+`cache_control` on the injected block is accepted, and streaming is unaffected.
+`/v1/messages/count_tokens` remains ungated. The gate-429 body carries no
+unified quota headers, so `Classify` buckets it as Transient — no false quota
+cooldowns when an unshaped client hits it.
+
+Consequence implemented in v1: per-client-key `claude_code_compat` shaping
+(`internal/provider/anthropic/shape.go`) prepends the exact Claude Code first
+block for clients that are not Claude Code.

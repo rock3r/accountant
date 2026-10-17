@@ -67,18 +67,49 @@ no Remote Control, no claude.ai connectors, no `/login` account display.
 Local MCP servers still work. A native `/login` session outside the proxy
 (without these env vars) stays available as an escape hatch.
 
-**3P apps**: any app that speaks the Anthropic Messages format can use the
-same base URL with the client key as `x-api-key` or `Authorization: Bearer`.
-Note (S1 finding): Anthropic gates setup-token inference on requests
-carrying the Claude Code system prompt. Apps that do not send it get an
-upstream 429 (`rate_limit_error`, "Error") regardless of quota.
+**Other apps (Pi, scripts, …)**: any app that speaks the Anthropic Messages
+format can use the same base URL with a client key as `x-api-key` or
+`Authorization: Bearer`. Anthropic gates subscription-token inference on
+requests carrying the Claude Code system prompt (S1 finding), so clients
+that are not Claude Code need a compat key:
+
+```sh
+accountant client add pi --claude-code-compat
+```
+
+For requests from a compat client, accountant prepends Claude Code's exact
+first system block to the request body (idempotently — an already-shaped
+body is forwarded byte-identical). Everything else still passes through
+untouched. For Pi, add this to `~/.pi/agent/models.json`:
+
+```json
+{
+  "providers": {
+    "accountant": {
+      "baseUrl": "http://127.0.0.1:8787",
+      "api": "anthropic-messages",
+      "apiKey": "<client key>",
+      "models": [
+        { "id": "claude-opus-4-6", "reasoning": true },
+        { "id": "claude-sonnet-4-6", "reasoning": true },
+        { "id": "claude-haiku-5-5", "reasoning": true }
+      ]
+    }
+  }
+}
+```
+
+Then `/model` and pick `accountant/…`. Keeping it a separate provider
+leaves Pi's built-in Anthropic provider untouched as a fallback.
 
 ## Commands
 
 ```
 accountant serve                 run the proxy in the foreground
 accountant account add|list|remove|test
-accountant client add|list|remove
+accountant client add|list|update|remove
+                                 update flips --claude-code-compat without
+                                 rotating the key
 accountant env                   print the Claude Code env exports
 accountant status                per-account 5h/7d use, resets, cooldowns, pins
 accountant doctor                permissions, token tests, upstream reachability

@@ -24,7 +24,7 @@ func TestClientLifecycle(t *testing.T) {
 	paths := testPaths(t)
 	var out, errOut bytes.Buffer
 
-	if rc := clientAdd("macbook", paths, &out, &errOut); rc != 0 {
+	if rc := clientAdd("macbook", false, paths, &out, &errOut); rc != 0 {
 		t.Fatalf("clientAdd rc=%d: %s", rc, errOut.String())
 	}
 	// The key is shown once and only the hash is stored.
@@ -43,7 +43,7 @@ func TestClientLifecycle(t *testing.T) {
 		t.Fatal("plaintext key stored")
 	}
 	// Duplicate add fails.
-	if rc := clientAdd("macbook", paths, &out, &errOut); rc == 0 {
+	if rc := clientAdd("macbook", false, paths, &out, &errOut); rc == 0 {
 		t.Fatal("duplicate add must fail")
 	}
 	out.Reset()
@@ -63,7 +63,7 @@ func TestClientKeyVerifies(t *testing.T) {
 	// The hash stored by client add must validate the presented key.
 	paths := testPaths(t)
 	var out, errOut bytes.Buffer
-	if rc := clientAdd("c1", paths, &out, &errOut); rc != 0 {
+	if rc := clientAdd("c1", false, paths, &out, &errOut); rc != 0 {
 		t.Fatal(errOut.String())
 	}
 	var key string
@@ -78,6 +78,52 @@ func TestClientKeyVerifies(t *testing.T) {
 	cfg, _ := config.Load(paths.ConfigFile)
 	if cfg.Clients[0].KeySHA256 != proxy.HashKey(key) {
 		t.Fatal("stored hash does not match shown key")
+	}
+}
+
+func TestClientCompatFlag(t *testing.T) {
+	paths := testPaths(t)
+	var out, errOut bytes.Buffer
+
+	if rc := clientAdd("pi", true, paths, &out, &errOut); rc != 0 {
+		t.Fatal(errOut.String())
+	}
+	cfg, err := config.Load(paths.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.FindClient("pi").ClaudeCodeCompat {
+		t.Fatal("compat flag not stored")
+	}
+
+	out.Reset()
+	if rc := clientList(paths, &out, &errOut); rc != 0 || !strings.Contains(out.String(), "pi (claude-code-compat)") {
+		t.Fatalf("list = %q rc=%d", out.String(), rc)
+	}
+
+	// update flips the flag without touching the key
+	before := cfg.FindClient("pi").KeySHA256
+	if rc := clientUpdate("pi", false, paths, &out, &errOut); rc != 0 {
+		t.Fatal(errOut.String())
+	}
+	cfg, _ = config.Load(paths.ConfigFile)
+	if cfg.FindClient("pi").ClaudeCodeCompat || cfg.FindClient("pi").KeySHA256 != before {
+		t.Fatalf("update: %+v", cfg.FindClient("pi"))
+	}
+	if rc := clientUpdate("nope", true, paths, &out, &errOut); rc == 0 {
+		t.Fatal("update of unknown client should fail")
+	}
+
+	// flag parsing
+	id, compat, ok := parseClientFlags([]string{"pi", "--claude-code-compat"}, false)
+	if !ok || id != "pi" || !compat {
+		t.Fatal("parse add with flag")
+	}
+	if _, _, ok = parseClientFlags([]string{"pi"}, true); ok {
+		t.Fatal("update without flag should be rejected")
+	}
+	if _, _, ok = parseClientFlags([]string{"--claude-code-compat"}, false); ok {
+		t.Fatal("missing ID should be rejected")
 	}
 }
 

@@ -31,6 +31,10 @@ func (a Account) IsEnabled() bool { return a.Enabled == nil || *a.Enabled }
 type Client struct {
 	ID        string `toml:"id"`
 	KeySHA256 string `toml:"key_sha256"`
+	// ClaudeCodeCompat marks a client that is not Claude Code: its
+	// requests are reshaped so upstream accepts subscription
+	// credentials (see anthropic.ShapeClaudeCodeCompat).
+	ClaudeCodeCompat bool `toml:"claude_code_compat,omitempty"`
 }
 
 // Config is the root of config.toml.
