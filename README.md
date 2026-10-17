@@ -120,6 +120,13 @@ leaves Pi's built-in Anthropic provider untouched as a fallback. The
 `!security …` form reads the key from the login Keychain at request time;
 a literal key or `$ENV_VAR` work too.
 
+For a **live model catalog** (every model the subscription can use, straight
+from the proxied `GET /v1/models`, instead of the static list above), copy
+`integrations/pi/accountant.ts` to `~/.pi/agent/extensions/` and drop the
+static `accountant` block from `models.json`. The extension fetches the
+catalog at startup, caches it under `~/.pi/agent/accountant-models-cache.json`
+for when the daemon is down, and refreshes it when the model picker reloads.
+
 ## Commands
 
 ```
