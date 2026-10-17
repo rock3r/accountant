@@ -115,6 +115,12 @@ func eligible(as *state.AccountState, now time.Time, scale string) bool {
 	return true
 }
 
+// Eligible reports whether an account can take traffic right now. Exported
+// for status reporting; the router uses the same rule internally.
+func Eligible(as *state.AccountState, now time.Time, scale string) bool {
+	return eligible(as, now, scale)
+}
+
 // recoveryTime is used to pick the zero-eligible probe target:
 // cooling_until if set and in the future, else the earliest future reset_at
 // among the account's fresh exhausted windows, else now.

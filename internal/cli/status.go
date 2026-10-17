@@ -46,6 +46,8 @@ func cmdStatus(paths config.Paths, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "  state:     AUTH-BROKEN (run: accountant account test "+a.ID+")")
 		case as.CoolingUntil.After(now):
 			fmt.Fprintf(stdout, "  state:     cooling until %s\n", as.CoolingUntil.Local().Format("2006-01-02 15:04:05"))
+		case !router.Eligible(as, now, cfg.UtilizationScale):
+			fmt.Fprintln(stdout, "  state:     ineligible (a quota window reads 100%; unblocks at its reset)")
 		default:
 			fmt.Fprintln(stdout, "  state:     eligible")
 		}

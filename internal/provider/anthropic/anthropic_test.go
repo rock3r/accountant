@@ -56,6 +56,28 @@ func TestRewriteRequestBetaMerge(t *testing.T) {
 	}
 }
 
+// Regression: appending the oauth token to a multi-line anthropic-beta
+// header must preserve every client line.
+func TestRewriteRequestBetaMergeMultiLine(t *testing.T) {
+	p := New("")
+	req, _ := http.NewRequest(http.MethodPost, "http://x/v1/messages", nil)
+	req.Header.Add("anthropic-beta", "a,b")
+	req.Header.Add("anthropic-beta", "c,d")
+	if err := p.RewriteRequest(req, []byte("tok")); err != nil {
+		t.Fatal(err)
+	}
+	got := req.Header.Values("anthropic-beta")
+	want := []string{"a,b", "c,d, oauth-2025-04-20"}
+	if len(got) != len(want) {
+		t.Fatalf("lines = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSessionKey(t *testing.T) {
 	p := New("")
 	req, _ := http.NewRequest(http.MethodPost, "http://x/v1/messages", nil)

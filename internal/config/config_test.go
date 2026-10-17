@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +103,10 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if out.Accounts[0].Label != "One" || out.Clients[0].KeySHA256 != "abc" {
 		t.Fatalf("round trip: %+v", out)
+	}
+	// The guidance header survives saves.
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "# accountant configuration") {
+		t.Fatal("guidance header lost on save")
 	}
 }

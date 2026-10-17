@@ -204,7 +204,18 @@ func accountList(paths config.Paths, stdout, stderr io.Writer) int {
 }
 
 func accountRemove(id string, paths config.Paths, stdout, stderr io.Writer) int {
-	err := config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
+	cfg, err := config.Load(paths.ConfigFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	acct := cfg.FindAccount(id)
+	if acct == nil {
+		fmt.Fprintf(stderr, "error: no account %q\n", id)
+		return 1
+	}
+	credRef := acct.CredentialRef
+	err = config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
 		if c.FindAccount(id) == nil {
 			return fmt.Errorf("no account %q", id)
 		}
@@ -221,7 +232,7 @@ func accountRemove(id string, paths config.Paths, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
 	}
-	if err := vault.NewKeychain().Delete(id); err != nil {
+	if err := vault.NewKeychain().Delete(credRef); err != nil {
 		fmt.Fprintf(stderr, "warning: removing credential from Keychain: %v\n", err)
 	}
 	st := storeFor(paths)

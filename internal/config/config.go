@@ -206,9 +206,21 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+// fileHeader is prepended on every save so the shipped guidance survives
+// CLI edits (the TOML encoder does not preserve comments).
+const fileHeader = `# accountant configuration
+#
+# listen: loopback bind for the proxy (LAN phase changes this; nothing else hardcodes it)
+# utilization_scale: "fraction" (default; from spike S1) or "percent"
+# [[accounts]]: metadata only — credentials live in the vault, never here
+# [[clients]]: key_sha256 only — the key itself is shown once at creation
+
+`
+
 // Marshal serializes the config as TOML.
 func Marshal(c *Config) ([]byte, error) {
 	var b strings.Builder
+	b.WriteString(fileHeader)
 	enc := toml.NewEncoder(&b)
 	if err := enc.Encode(c); err != nil {
 		return nil, err

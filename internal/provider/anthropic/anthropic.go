@@ -67,10 +67,13 @@ func (p *Provider) RewriteRequest(req *http.Request, cred []byte) error {
 		}
 	}
 	if !found {
-		if req.Header.Get("anthropic-beta") == "" {
+		lines := req.Header.Values("anthropic-beta")
+		if len(lines) == 0 {
 			req.Header.Set("anthropic-beta", oauthBeta)
 		} else {
-			req.Header.Set("anthropic-beta", req.Header.Get("anthropic-beta")+", "+oauthBeta)
+			// Append to the last line; never drop client header lines.
+			lines[len(lines)-1] = lines[len(lines)-1] + ", " + oauthBeta
+			req.Header[http.CanonicalHeaderKey("anthropic-beta")] = lines
 		}
 	}
 	return nil
