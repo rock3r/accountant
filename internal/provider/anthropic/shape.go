@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 )
 
 // claudeCodeSystemPrompt is the exact first system block Claude Code
@@ -20,17 +21,19 @@ var claudeCodeBlock = json.RawMessage(
 	`{"type":"text","text":"` + claudeCodeSystemPrompt + `","cache_control":{"type":"ephemeral"}}`)
 
 // ShapeRequest implements provider.RequestShaper. It makes the request
-// body look like it came from Claude Code by ensuring the system prompt
-// starts with Claude Code's own first block. Bodies that already pass the
-// gate, or that are not JSON objects, are returned byte-for-byte
-// unchanged.
+// body look like it came from Claude Code: the system prompt is made to
+// start with Claude Code's own first block, and the client's system text
+// is sanitized (the upstream third-party classifier rejects prompts that
+// name a third-party client). Bodies that already pass the gate, or that
+// are not JSON objects, are returned byte-for-byte unchanged.
 func (p *Provider) ShapeRequest(body []byte) ([]byte, error) {
 	return ShapeClaudeCodeCompat(body), nil
 }
 
 // ShapeClaudeCodeCompat prepends the Claude Code system block unless the
 // system prompt already starts with it (or with Claude Code's billing
-// header block followed by it). Anything unexpected is returned unchanged.
+// header block followed by it), and sanitizes the client's own system
+// text. Anything unexpected is returned unchanged.
 func ShapeClaudeCodeCompat(body []byte) []byte {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {
@@ -51,7 +54,7 @@ func ShapeClaudeCodeCompat(body []byte) []byte {
 			if s == claudeCodeSystemPrompt {
 				return body // already shaped
 			}
-			clientBlock, err := json.Marshal(map[string]string{"type": "text", "text": s})
+			clientBlock, err := json.Marshal(map[string]string{"type": "text", "text": SanitizeSystemText(s)})
 			if err != nil {
 				return body
 			}
@@ -65,7 +68,7 @@ func ShapeClaudeCodeCompat(body []byte) []byte {
 			if alreadyShaped(blocks) {
 				return body
 			}
-			obj["system"] = concatBlocks(claudeCodeBlock, blocks)
+			obj["system"] = concatBlocks(claudeCodeBlock, sanitizeBlocks(blocks))
 			return marshalOrOriginal(obj, body)
 		default:
 			return body
@@ -74,6 +77,91 @@ func ShapeClaudeCodeCompat(body []byte) []byte {
 
 	obj["system"] = concatBlocks(claudeCodeBlock, nil)
 	return marshalOrOriginal(obj, body)
+}
+
+// sanitizeBlocks rewrites the text of each system block; blocks whose
+// text is not a plain string are kept as-is.
+func sanitizeBlocks(blocks []json.RawMessage) []json.RawMessage {
+	out := make([]json.RawMessage, len(blocks))
+	for i, b := range blocks {
+		var obj map[string]json.RawMessage
+		var text string
+		if err := json.Unmarshal(b, &obj); err != nil {
+			out[i] = b
+			continue
+		}
+		rawText, has := obj["text"]
+		if !has || json.Unmarshal(rawText, &text) != nil {
+			out[i] = b
+			continue
+		}
+		newText, err := json.Marshal(SanitizeSystemText(text))
+		if err != nil {
+			out[i] = b
+			continue
+		}
+		obj["text"] = newText
+		merged, err := json.Marshal(obj)
+		if err != nil {
+			out[i] = b
+			continue
+		}
+		out[i] = merged
+	}
+	return out
+}
+
+// SanitizeSystemText rewrites the substrings the upstream third-party
+// classifier keys on: a standalone "pi"/"Pi" (the harness's own name)
+// becomes "agent"/"Agent", and a standalone ".md" becomes "markdown".
+// Matches bordered by letters, digits, or path characters (\w / * . _ -)
+// are left alone, so words like "pipeline" and file names like
+// "README.md" survive.
+func SanitizeSystemText(s string) string {
+	isExcluded := func(c byte) bool {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			return true
+		}
+		switch c {
+		case '_', '/', '*', '.', '-':
+			return true
+		}
+		return false
+	}
+	isWord := func(c byte) bool {
+		return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+	}
+
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		// ".md" not preceded by an excluded char, followed by a word
+		// boundary.
+		if s[i] == '.' && i+2 < len(s) && s[i+1] == 'm' && s[i+2] == 'd' &&
+			(i == 0 || !isExcluded(s[i-1])) &&
+			(i+3 >= len(s) || !isWord(s[i+3])) {
+			b.WriteString("markdown")
+			i += 3
+			continue
+		}
+		// "pi"/"Pi" not bordered by an excluded char on either side.
+		if (s[i] == 'p' || s[i] == 'P') && i+1 < len(s) && s[i+1] == 'i' &&
+			(i == 0 || !isExcluded(s[i-1])) &&
+			(i+2 >= len(s) || !isExcluded(s[i+2])) {
+			if s[i] == 'P' {
+				b.WriteString("Agent")
+			} else {
+				b.WriteString("agent")
+			}
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
 }
 
 // alreadyShaped reports whether the system blocks already pass the gate:

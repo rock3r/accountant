@@ -41,12 +41,12 @@ func TestShapeClaudeCodeCompat(t *testing.T) {
 		{"no system", `{"model":"m","messages":[]}`, []string{cc}},
 		{"null system", `{"system":null}`, []string{cc}},
 		{"string system already cc", `{"system":"` + cc + `"}`, nil},
-		{"string system other", `{"system":"You are pi."}`, []string{cc, "You are pi."}},
+		{"string system other", `{"system":"You are pi, a coding agent."}`, []string{cc, "You are agent, a coding agent."}},
 		{"empty array", `{"system":[]}`, []string{cc}},
 		{"array already cc first", `{"system":[{"type":"text","text":"` + cc + `"},{"type":"text","text":"x"}]}`, nil},
 		{"billing header then cc", `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.0.76.ab12; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"` + cc + `"}]}`, nil},
-		{"cc second without billing header", `{"system":[{"type":"text","text":"You are pi."},{"type":"text","text":"` + cc + `"}]}`, []string{cc, "You are pi.", cc}},
-		{"array other", `{"system":[{"type":"text","text":"You are pi."}]}`, []string{cc, "You are pi."}},
+		{"cc second without billing header", `{"system":[{"type":"text","text":"You are pi, a coding agent."},{"type":"text","text":"` + cc + `"}]}`, []string{cc, "You are agent, a coding agent.", cc}},
+		{"array other", `{"system":[{"type":"text","text":"You are pi, a coding agent."}]}`, []string{cc, "You are agent, a coding agent."}},
 		{"not json", `garbage{`, nil},
 		{"json array top level", `["not","an","object"]`, nil},
 		{"system wrong type", `{"system":42}`, nil},
@@ -100,5 +100,31 @@ func TestShapeClaudeCodeCompatIdempotent(t *testing.T) {
 	twice := ShapeClaudeCodeCompat(once)
 	if !bytes.Equal(once, twice) {
 		t.Fatalf("not idempotent:\n%s\n%s", once, twice)
+	}
+}
+
+func TestSanitizeSystemText(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"You are pi, a coding agent.", "You are agent, a coding agent."},
+		{"Pi is a harness.", "Agent is a harness."},
+		{"operating inside pi, a coding agent harness", "operating inside agent, a coding agent harness"},
+		{"pipeline", "pipeline"},   // embedded: untouched
+		{"api", "api"},             // embedded: untouched
+		{"Pi\npi", "Agent\nagent"}, // both sides of a newline
+		{"run pi config", "run agent config"},
+		{"pi.h", "pi.h"},           // dotted: untouched
+		{"pi.md", "pi.md"},         // dotted: untouched
+		{"README.md", "README.md"}, // file name: untouched
+		{"read .md files", "read markdown files"},
+		{"docs/AGENTS.md", "docs/AGENTS.md"}, // path: untouched
+		{"follow .md cross-references", "follow markdown cross-references"},
+		{"a .mdx file", "a .mdx file"}, // .mdx: word char after d
+		{"x.md, y", "x.md, y"},         // preceded by word char
+		{"Claude Code, Anthropic's official CLI for Claude.", "Claude Code, Anthropic's official CLI for Claude."},
+	}
+	for _, tc := range cases {
+		if got := SanitizeSystemText(tc.in); got != tc.want {
+			t.Errorf("SanitizeSystemText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }

@@ -26,7 +26,7 @@ func TestCompatClientBodyShaped(t *testing.T) {
 	r := newRig(t, []config.Account{acctCfg("a1", 10)})
 	r.enableCompat(t, "pi", "pi-client-key")
 
-	body := []byte(`{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"hi"}],"system":"You are pi."}`)
+	body := []byte(`{"model":"claude-haiku-5-5","messages":[{"role":"user","content":"hi"}],"system":"You are pi, a coding agent."}`)
 	resp := r.doRequest(t, http.MethodPost, "/v1/messages", body, map[string]string{"x-api-key": "pi-client-key"})
 	_ = resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -46,7 +46,7 @@ func TestCompatClientBodyShaped(t *testing.T) {
 		t.Fatalf("upstream body does not parse: %v\n%s", err, up[0].Body)
 	}
 	if len(got.System) != 2 || got.System[0].Text != "You are Claude Code, Anthropic's official CLI for Claude." ||
-		got.System[1].Text != "You are pi." {
+		got.System[1].Text != "You are agent, a coding agent." {
 		t.Fatalf("upstream system blocks = %+v", got.System)
 	}
 }

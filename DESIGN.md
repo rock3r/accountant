@@ -272,7 +272,8 @@ rate-limits too). Correctness must never depend on the poller.
 - 3P Anthropic-format apps: same base URL; client key as `x-api-key` or Bearer.
   Clients that are not Claude Code must be created with
   `accountant client add ID --claude-code-compat` so the proxy prepends Claude
-  Code's first system block to their requests (the gate from S1). The flag is
+  Code's first system block to their requests and sanitizes their system-prompt
+  text (the gate and the third-party classifier from S1). The flag is
   per client key and can be flipped with `accountant client update` without
   rotating the key. Compat shaping is idempotent: a body that already carries
   the Claude Code system block is forwarded byte-identical.
@@ -527,10 +528,11 @@ the upstream's real 429 shape match this design.
   covers every other value); whether `/usage` inside Claude Code
   stays meaningful behind the proxy (S2); whether Desktop 3P mode is acceptable day
   to day (S3); whether the Codex apps expose any base-URL surface at all (S4).
-- **Gate drift.** Compat clients depend on Anthropic's system-prompt gate keeping
-  its current shape. If the gate tightens, compat clients degrade to upstream
-  429s (classified Transient — no quota cooldown, see S1); Claude Code traffic
-  is unaffected because it is shaped correctly by the client itself.
+- **Gate drift.** Compat clients depend on Anthropic's system-prompt gate and
+  third-party classifier keeping their current shape. If either tightens,
+  compat clients degrade to upstream 429s/400s (both classified Transient —
+  no quota cooldown, see S1); Claude Code traffic is unaffected because it is
+  shaped correctly by the client itself.
 
 ## Sources
 

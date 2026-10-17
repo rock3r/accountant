@@ -77,9 +77,15 @@ that are not Claude Code need a compat key:
 accountant client add pi --claude-code-compat
 ```
 
-For requests from a compat client, accountant prepends Claude Code's exact
-first system block to the request body (idempotently — an already-shaped
-body is forwarded byte-identical). Everything else still passes through
+For requests from a compat client, accountant (a) prepends Claude Code's
+exact first system block to the request body (idempotently — an
+already-shaped body is forwarded byte-identical) and (b) sanitizes the
+client's own system-prompt text: standalone "pi"/"Pi" becomes
+"agent"/"Agent" and standalone ".md" becomes "markdown", because upstream
+otherwise classifies the request as third-party and rejects it (HTTP 400,
+"Third-party apps now draw from your extra usage"; S1 follow-up). Words
+like "pipeline" and paths like "README.md" are untouched. Note the model
+will see the sanitized wording. Headers and everything else pass through
 untouched. For Pi, add this to `~/.pi/agent/models.json`:
 
 ```json
@@ -90,9 +96,12 @@ untouched. For Pi, add this to `~/.pi/agent/models.json`:
       "api": "anthropic-messages",
       "apiKey": "<client key>",
       "models": [
-        { "id": "claude-opus-4-6", "reasoning": true },
-        { "id": "claude-sonnet-4-6", "reasoning": true },
-        { "id": "claude-haiku-5-5", "reasoning": true }
+        { "id": "claude-opus-4-6", "name": "Claude Opus 4.6 (accountant)", "reasoning": true,
+          "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 64000 },
+        { "id": "claude-sonnet-4-6", "name": "Claude Sonnet 4.6 (accountant)", "reasoning": true,
+          "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 64000 },
+        { "id": "claude-haiku-5-5", "name": "Claude Haiku 5.5 (accountant)", "reasoning": true,
+          "input": ["text", "image"], "contextWindow": 200000, "maxTokens": 64000 }
       ]
     }
   }
@@ -100,7 +109,9 @@ untouched. For Pi, add this to `~/.pi/agent/models.json`:
 ```
 
 Then `/model` and pick `accountant/…`. Keeping it a separate provider
-leaves Pi's built-in Anthropic provider untouched as a fallback.
+leaves Pi's built-in Anthropic provider untouched as a fallback. The
+`!security …` form reads the key from the login Keychain at request time;
+a literal key or `$ENV_VAR` work too.
 
 ## Commands
 
