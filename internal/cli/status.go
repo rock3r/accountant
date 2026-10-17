@@ -58,11 +58,13 @@ func cmdStatus(paths config.Paths, stdout, stderr io.Writer) int {
 			}
 		}
 		fmt.Fprintf(stdout, "  sessions:  %d pinned\n", pins)
-		if minted, ok := a.MintedTime(); ok {
-			expires := minted.AddDate(1, 0, 0)
-			if now.After(expires.AddDate(0, 0, -30)) {
-				fmt.Fprintf(stdout, "  WARNING:   token expires ~%s; mint a new one with `claude setup-token` and re-add\n",
-					expires.Format("2006-01-02"))
+		if a.Provider == "anthropic" {
+			if minted, ok := a.MintedTime(); ok {
+				expires := minted.AddDate(1, 0, 0)
+				if now.After(expires.AddDate(0, 0, -30)) {
+					fmt.Fprintf(stdout, "  WARNING:   token expires ~%s; mint a new one with `claude setup-token` and re-add\n",
+						expires.Format("2006-01-02"))
+				}
 			}
 		}
 	}

@@ -362,6 +362,23 @@ func (r *Router) ClearAuthBroken(accountID string) error {
 	})
 }
 
+// MarkAuthBroken takes an account out of rotation after a permanent
+// credential failure observed outside a response (a rejected token
+// refresh); mirrors the auth-broken verdict handling in Record.
+func (r *Router) MarkAuthBroken(accountID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.store.Locked(func(st *state.State) (bool, error) {
+		as := st.Account(accountID)
+		if as.AuthBroken {
+			return false, nil
+		}
+		as.AuthBroken = true
+		r.log.Warn("account marked auth-broken", "account", accountID, "reason", "credential refresh rejected")
+		return true, nil
+	})
+}
+
 // applyWindow overlays a parsed sample onto stored window state.
 func applyWindow(dst *state.Window, src provider.WindowSample, now time.Time) {
 	if src.HasUtilization {

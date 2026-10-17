@@ -177,6 +177,27 @@ export ENABLE_TOOL_SEARCH=true
 # Or the equivalent env block in ~/.claude/settings.json.
 # Known losses behind the proxy: no Remote Control, no claude.ai connectors,
 # no /login account display. Local MCP servers still work.
+
+# Codex CLI through accountant — add to ~/.codex/config.toml:
+#
+#   model_provider = "accountant"
+#
+#   [model_providers.accountant]
+#   name = "accountant (local rollover proxy)"
+#   base_url = "http://%[1]s/codex"
+#   wire_api = "responses"
+#   env_key = "ACCOUNTANT_API_KEY"
+#
+# and: export ACCOUNTANT_API_KEY=<your client key>
+#
+# Notes:
+# - Only model traffic goes through the proxy; login, connectors, and other
+#   ChatGPT app features still use the account logged into the CLI.
+# - The custom provider keeps the HTTP transport (no WebSocket), which the
+#   proxy requires.
+# - Never point both the CLI (direct) and accountant at the same auth.json:
+#   accountant owns token refresh for imported accounts and the refresh
+#   token rotates on use.
 `, listen)
 	return 0
 }

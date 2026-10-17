@@ -77,10 +77,31 @@ type Provider interface {
 }
 
 // Refresher is implemented only by providers whose credentials expire.
-// Claude setup-tokens do not; Codex OAuth will.
+// Claude setup-tokens do not; Codex OAuth does. The proxy calls Refresh
+// single-flight per account and writes the new credential to the vault
+// before any request uses it.
 type Refresher interface {
 	Refresh(ctx context.Context, cred []byte) (newCred []byte, err error)
 }
+
+// CredentialExpirer is implemented by providers whose credentials carry an
+// expiry the proxy should respect proactively: when the expiry is near,
+// the proxy refreshes before sending rather than waiting for a 401.
+type CredentialExpirer interface {
+	// CredentialExpiry reports when the credential stops being accepted.
+	// ok is false when the credential carries no readable expiry.
+	CredentialExpiry(cred []byte) (time.Time, bool)
+}
+
+// RefreshError classifies a credential refresh failure. A permanent
+// failure (expired, reused, or revoked refresh token) takes the account
+// out of rotation; a transient one (network, 5xx) does not.
+type RefreshError struct {
+	Permanent bool
+	Message   string
+}
+
+func (e *RefreshError) Error() string { return e.Message }
 
 // RequestShaper is implemented by providers that can rewrite a request
 // body for clients that are not the provider's native client. For

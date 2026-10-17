@@ -2,8 +2,8 @@
 
 [![ci](https://github.com/rock3r/accountant/actions/workflows/ci.yml/badge.svg)](https://github.com/rock3r/accountant/actions/workflows/ci.yml)
 
-Multi-subscription rollover for Claude. One local proxy holds one long-lived
-token per Claude subscription and moves work to the next subscription when
+Multi-subscription rollover for Claude and Codex. One local proxy holds one
+credential per subscription and moves work to the next subscription when
 the current one runs out — no manual account switching.
 
 Status: v1, local proof of concept on one Mac. See `DESIGN.md` for the
@@ -113,15 +113,58 @@ leaves Pi's built-in Anthropic provider untouched as a fallback. The
 `!security …` form reads the key from the login Keychain at request time;
 a literal key or `$ENV_VAR` work too.
 
+## Connect Codex (ChatGPT subscriptions)
+
+Codex subscriptions join the same pool behind `http://127.0.0.1:8787/codex`.
+Facts and caveats are verified in `docs/s4-results.md` (spike S4).
+
+```sh
+# 1. Log the subscription into a dedicated Codex CLI profile, then import
+#    its OAuth tokens (reads auth.json; never modifies it):
+CODEX_HOME="$(mktemp -d)/codex-work" codex login
+accountant account add codex --label work --priority 10 \
+  --from "$CODEX_HOME/auth.json"
+
+# 2. Point Codex CLI at the proxy — in ~/.codex/config.toml:
+#
+#    model_provider = "accountant"
+#
+#    [model_providers.accountant]
+#    base_url = "http://127.0.0.1:8787/codex"
+#    wire_api = "responses"
+#    env_key = "ACCOUNTANT_API_KEY"
+
+export ACCOUNTANT_API_KEY=<client key>
+```
+
+Differences from Claude accounts:
+
+- Codex credentials are OAuth tokens that **expire (~10-day access tokens)
+  and rotate on refresh**. The proxy refreshes them itself, single-flight
+  per account, and writes the rotated tokens back to the vault before use.
+  That makes accountant the sole refresher for imported logins: keep any
+  direct, non-proxied Codex CLI login in a separate `CODEX_HOME`, or its
+  refresh token goes stale after accountant's first refresh.
+- Quota comes from `x-codex-*` response headers (percent scale, normalized
+  internally). Note upstream may report the weekly window as "primary" —
+  windows are mapped by their actual length, not their position.
+- Only model traffic goes through the proxy. Login, connectors, and other
+  ChatGPT app features keep talking to OpenAI directly from the CLI.
+- A permanently rejected refresh (expired/revoked/reused token) marks the
+  account auth-broken; re-import with `accountant account add codex` and
+  clear with `accountant account test ID`.
+
 ## Commands
 
 ```
 accountant serve                 run the proxy in the foreground
 accountant account add|list|remove|test
+                                 add claude prompts for a setup-token;
+                                 add codex imports a Codex CLI auth.json
 accountant client add|list|update|remove
                                  update flips --claude-code-compat without
                                  rotating the key
-accountant env                   print the Claude Code env exports
+accountant env                   print the client setup blocks
 accountant status                per-account 5h/7d use, resets, cooldowns, pins
 accountant doctor                permissions, token tests, upstream reachability
 accountant service install|uninstall   launchd user service
@@ -142,11 +185,14 @@ every routing decision re-reads config and state under the lock.
 ## Recovery
 
 - An account that returns 401 leaves rotation until
-  `accountant account test ID` passes again.
+  `accountant account test ID` passes again. (Codex: `account test` also
+  refreshes expired OAuth tokens.)
 - When every account is exhausted, you see the true upstream 429 unchanged,
   and Claude Code shows its normal limit message with the right reset time.
-- Token lasts one year; `accountant status` warns 30 days before expiry.
-  The fix is a fresh `claude setup-token` and `accountant account add`.
+- Claude setup-tokens last one year; `accountant status` warns 30 days
+  before expiry. The fix is a fresh `claude setup-token` and
+  `accountant account add`. Codex OAuth tokens never expire while the
+  proxy refreshes them; a permanently rejected refresh means re-import.
 
 ## Development
 

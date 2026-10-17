@@ -1,6 +1,8 @@
 // Package cli implements the accountant command set: serve, account
 // add|list|remove|test, client add|list|remove, env, status, doctor, and
-// service install|uninstall.
+// service install|uninstall. Accounts can be Claude subscriptions
+// (provider "anthropic") or ChatGPT Codex subscriptions (provider
+// "codex").
 package cli
 
 import (
@@ -59,13 +61,14 @@ func usage(w io.Writer) {
 Usage:
   accountant serve                              run the proxy daemon
   accountant account add claude --label NAME [--priority N]
+  accountant account add codex --label NAME [--priority N] [--from PATH]
   accountant account list
   accountant account remove ID
   accountant account test ID
   accountant client add ID
   accountant client list
   accountant client remove ID
-  accountant env                                print Claude Code env exports
+  accountant env                                print client setup (Claude Code and Codex)
   accountant status                             quota and pin overview
   accountant doctor                             run health checks
   accountant service install|uninstall          manage the launchd user service

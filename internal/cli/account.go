@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,7 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"accountant/internal/config"
-	"accountant/internal/provider/anthropic"
+	"accountant/internal/provider/codex"
 	"accountant/internal/state"
 	"accountant/internal/vault"
 )
@@ -52,6 +53,7 @@ var idSafe = regexp.MustCompile(`[^a-z0-9-]+`)
 func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int {
 	provider := ""
 	label := ""
+	from := ""
 	priority := 10
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -62,6 +64,13 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 			}
 			i++
 			label = args[i]
+		case "--from":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "--from needs a value")
+				return 2
+			}
+			i++
+			from = args[i]
 		case "--priority":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "--priority needs a value")
@@ -84,8 +93,8 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 	if provider == "claude" {
 		provider = "anthropic"
 	}
-	if provider != "anthropic" {
-		fmt.Fprintf(stderr, "unknown provider %q (v1 supports: claude)\n", provider)
+	if provider != "anthropic" && provider != "codex" {
+		fmt.Fprintf(stderr, "unknown provider %q (supported: claude, codex)\n", provider)
 		return 2
 	}
 	if label == "" {
@@ -93,34 +102,34 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 		return 2
 	}
 
-	fmt.Fprintf(stdout, `To register this subscription:
-
-  1. In a terminal, run Claude Code against a scratch config dir so your
-     normal login is untouched:
-
-       export CLAUDE_CONFIG_DIR="$(mktemp -d)/claude-%s"
-       claude        # complete /login with the %q subscription
-       claude setup-token
-
-  2. Paste the token below (input is hidden). It is validated, stored in
-     the macOS Keychain, and never written to any plain-text file.
-
-Token: `, label, label)
-	token, err := readSecret()
-	fmt.Fprintln(stdout)
-	if err != nil {
-		fmt.Fprintf(stderr, "error: reading token: %v\n", err)
-		return 1
-	}
-	if token == "" {
-		fmt.Fprintln(stderr, "error: empty token")
-		return 1
+	prov := providerFor(provider)
+	var cred []byte
+	switch provider {
+	case "anthropic":
+		var ok bool
+		cred, ok = accountAddAnthropic(label, stdout, stderr)
+		if !ok {
+			return 1
+		}
+	case "codex":
+		var ok bool
+		cred, ok = accountAddCodex(from, stdout, stderr)
+		if !ok {
+			return 1
+		}
 	}
 
-	prov := anthropic.New("")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if err := prov.Validate(ctx, []byte(token)); err != nil {
+	// Refresh an expired/near-expiry credential before validating, so a
+	// long-idle imported login validates against a fresh access token.
+	if fresh, refreshed, err := refreshIfExpiring(ctx, prov, cred); err != nil {
+		fmt.Fprintf(stderr, "warning: credential refresh failed: %v (validating as-is)\n", err)
+	} else if refreshed {
+		cred = fresh
+		fmt.Fprintln(stdout, "Refreshed the OAuth tokens.")
+	}
+	if err := prov.Validate(ctx, cred); err != nil {
 		fmt.Fprintf(stderr, "error: token validation failed: %v\n", err)
 		return 1
 	}
@@ -144,12 +153,12 @@ Token: `, label, label)
 		id = fmt.Sprintf("%s-%d", base, n)
 	}
 
-	if err := vault.NewKeychain().Put(id, []byte(token)); err != nil {
+	if err := vault.NewKeychain().Put(id, cred); err != nil {
 		fmt.Fprintf(stderr, "error: storing credential in Keychain: %v\n", err)
 		return 1
 	}
 	minted := time.Now().Format("2006-01-02")
-	err = config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
+	err := config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
 		c.Accounts = append(c.Accounts, config.Account{
 			ID:            id,
 			Provider:      provider,
@@ -167,6 +176,72 @@ Token: `, label, label)
 	}
 	fmt.Fprintf(stdout, "Added account %q (provider %s, priority %d).\n", id, provider, priority)
 	return 0
+}
+
+// accountAddAnthropic runs the interactive setup-token flow and returns
+// the pasted token. ok is false on any input error.
+func accountAddAnthropic(label string, stdout, stderr io.Writer) (cred []byte, ok bool) {
+	fmt.Fprintf(stdout, `To register this subscription:
+
+  1. In a terminal, run Claude Code against a scratch config dir so your
+     normal login is untouched:
+
+       export CLAUDE_CONFIG_DIR="$(mktemp -d)/claude-%s"
+       claude        # complete /login with the %q subscription
+       claude setup-token
+
+  2. Paste the token below (input is hidden). It is validated, stored in
+     the macOS Keychain, and never written to any plain-text file.
+
+Token: `, label, label)
+	token, err := readSecret()
+	fmt.Fprintln(stdout)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: reading token: %v\n", err)
+		return nil, false
+	}
+	if token == "" {
+		fmt.Fprintln(stderr, "error: empty token")
+		return nil, false
+	}
+	return []byte(token), true
+}
+
+// accountAddCodex imports the OAuth token triple from a Codex CLI login
+// (auth.json). ok is false on any read/parse error.
+func accountAddCodex(from string, stdout, stderr io.Writer) (cred []byte, ok bool) {
+	if from == "" {
+		from = defaultCodexAuthPath()
+	}
+	cred, err := codex.ImportAuthFile(from)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: importing Codex login: %v\n", err)
+		fmt.Fprintln(stderr, "hint: log in with a dedicated Codex CLI profile first:")
+		fmt.Fprintln(stderr, "  CODEX_HOME=\"$(mktemp -d)/codex-profile\" codex login")
+		return nil, false
+	}
+	fmt.Fprintf(stdout, `Imported Codex OAuth tokens from %s.
+
+NOTE: accountant refreshes these tokens itself from now on, and Codex
+refresh tokens rotate on every refresh. After accountant's first refresh,
+the login in %s can no longer refresh on its own. Point Codex CLI at the
+proxy (see `+"`accountant env`"+`); if you also want a direct, non-proxied
+Codex login, keep it in a separate CODEX_HOME with its own auth.json.
+`, from, from)
+	return cred, true
+}
+
+// defaultCodexAuthPath resolves the Codex CLI's auth.json: $CODEX_HOME
+// first, else ~/.codex.
+func defaultCodexAuthPath() string {
+	if home := os.Getenv("CODEX_HOME"); home != "" {
+		return filepath.Join(home, "auth.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "auth.json"
+	}
+	return filepath.Join(home, ".codex", "auth.json")
 }
 
 // readSecret reads one line with echo off when stdin is a terminal, else one
@@ -263,9 +338,20 @@ func accountTest(id string, paths config.Paths, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: reading credential: %v\n", err)
 		return 1
 	}
-	prov := anthropic.New("")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	prov := providerFor(acct.Provider)
+	if prov == nil {
+		fmt.Fprintf(stderr, "error: unknown provider %q\n", acct.Provider)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	if fresh, refreshed, err := ensureFreshCredential(ctx, prov, acct.CredentialRef, cred); err != nil {
+		fmt.Fprintf(stderr, "FAIL %s: %v\n", id, err)
+		return 1
+	} else if refreshed {
+		cred = fresh
+		fmt.Fprintln(stdout, "Refreshed the OAuth tokens.")
+	}
 	if err := prov.Validate(ctx, cred); err != nil {
 		fmt.Fprintf(stderr, "FAIL %s: %v\n", id, err)
 		return 1

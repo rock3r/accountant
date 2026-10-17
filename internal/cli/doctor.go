@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"accountant/internal/config"
+	"accountant/internal/provider"
 	"accountant/internal/provider/anthropic"
 	"accountant/internal/vault"
 )
@@ -49,7 +50,7 @@ func cmdDoctor(paths config.Paths, stdout, stderr io.Writer) int {
 		}
 	}
 	if enabled == 0 {
-		report(false, false, "no enabled accounts (add one: accountant account add claude --label NAME)")
+		report(false, false, "no enabled accounts (add one: accountant account add claude|codex --label NAME)")
 	} else {
 		report(true, false, "%d enabled account(s)", enabled)
 	}
@@ -59,29 +60,46 @@ func cmdDoctor(paths config.Paths, stdout, stderr io.Writer) int {
 		report(true, false, "%d client key(s)", len(cfg.Clients))
 	}
 
-	// Upstream reachability (no auth: any HTTP answer proves reachability).
-	prov := anthropic.New("")
-	reachable := false
-	func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, prov.UpstreamBaseURL()+"/v1/models", nil)
-		if err != nil {
-			return
+	// Upstream reachability per configured provider (no auth: any HTTP
+	// answer proves reachability).
+	provs := map[string]provider.Provider{}
+	for _, a := range cfg.Accounts {
+		if p := providerFor(a.Provider); p != nil {
+			provs[a.Provider] = p
 		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return
-		}
-		_ = resp.Body.Close()
-		reachable = true
-	}()
-	report(reachable, false, "upstream %s reachable", prov.UpstreamBaseURL())
+	}
+	if len(provs) == 0 {
+		provs["anthropic"] = anthropic.New("")
+	}
+	for id, prov := range provs {
+		reachable := false
+		func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, prov.UpstreamBaseURL()+"/healthz", nil)
+			if err != nil {
+				return
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return
+			}
+			_ = resp.Body.Close()
+			reachable = true
+		}()
+		report(reachable, false, "upstream %s (%s) reachable", prov.UpstreamBaseURL(), id)
+	}
 
-	// Per-account credential check (S1's validation call).
+	// Per-account credential check, provider-aware; expiring credentials
+	// (Codex OAuth) are refreshed first.
 	kc := vault.NewKeychain()
 	for _, a := range cfg.Accounts {
 		if !a.IsEnabled() {
+			continue
+		}
+		prov := providerFor(a.Provider)
+		if prov == nil {
+			report(false, false, "account %s: unknown provider %q", a.ID, a.Provider)
 			continue
 		}
 		cred, err := kc.Get(a.CredentialRef)
@@ -89,8 +107,11 @@ func cmdDoctor(paths config.Paths, stdout, stderr io.Writer) int {
 			report(false, false, "account %s: %v", a.ID, err)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err = prov.Validate(ctx, cred)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		cred, _, err = ensureFreshCredential(ctx, prov, a.CredentialRef, cred)
+		if err == nil {
+			err = prov.Validate(ctx, cred)
+		}
 		cancel()
 		if err != nil {
 			report(false, false, "account %s: token test failed: %v", a.ID, err)
