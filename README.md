@@ -9,6 +9,13 @@ the current one runs out — no manual account switching.
 Status: v1, local proof of concept on one Mac. See `DESIGN.md` for the
 binding design and `docs/s1-results.md` for the verified upstream facts.
 
+## Disclaimer
+
+accountant is experimental software, provided as-is, purely for
+experimentation, and used entirely at your own risk. Check the terms of
+service of your model providers before routing traffic through it. You are
+solely responsible for anything you do with it.
+
 ## How it works
 
 - One Go binary. A loopback proxy on `127.0.0.1:8787` speaks the Anthropic

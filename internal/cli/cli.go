@@ -53,6 +53,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+// disclaimer is printed by usage and at serve startup.
+const disclaimer = `accountant is experimental software, provided as-is, purely for
+experimentation, and used entirely at your own risk. Check the terms of
+service of your model providers before routing traffic through it. You are
+solely responsible for anything you do with it.
+`
+
 func usage(w io.Writer) {
 	fmt.Fprint(w, `accountant — multi-subscription rollover for Claude
 
@@ -62,14 +69,16 @@ Usage:
   accountant account list
   accountant account remove ID
   accountant account test ID
-  accountant client add ID
+  accountant client add ID [--claude-code-compat]
   accountant client list
+  accountant client update ID --claude-code-compat|--no-claude-code-compat
   accountant client remove ID
   accountant env                                print Claude Code env exports
   accountant status                             quota and pin overview
   accountant doctor                             run health checks
   accountant service install|uninstall          manage the launchd user service
-`)
+
+`+disclaimer)
 }
 
 func storeFor(paths config.Paths) *state.Store {

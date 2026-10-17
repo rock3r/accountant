@@ -53,6 +53,7 @@ func cmdServe(_ []string, paths config.Paths, stderr io.Writer) int {
 	}()
 
 	log.Info("accountant serving", "listen", cfg.Listen, "config", paths.ConfigFile, "state", paths.StateFile)
+	fmt.Fprintf(stderr, "note: %s", disclaimer)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1
