@@ -1,0 +1,127 @@
+# accountant
+
+[![ci](https://github.com/rock3r/accountant/actions/workflows/ci.yml/badge.svg)](https://github.com/rock3r/accountant/actions/workflows/ci.yml)
+
+Multi-subscription rollover for Claude. One local proxy holds one long-lived
+token per Claude subscription and moves work to the next subscription when
+the current one runs out — no manual account switching.
+
+Status: v1, local proof of concept on one Mac. See `DESIGN.md` for the
+binding design and `docs/s1-results.md` for the verified upstream facts.
+
+## How it works
+
+- One Go binary. A loopback proxy on `127.0.0.1:8787` speaks the Anthropic
+  Messages format and passes requests through **byte-identical** — it only
+  swaps your client key for the current account's `claude setup-token` token.
+- Each Claude Code session is pinned to one account (via the
+  `x-claude-code-session-id` header). When the pinned account answers
+  quota-exhausted before any response bytes flow, the same request bytes are
+  replayed on the next account and the session re-pins. Transient errors
+  (5xx, network) never fail over.
+- Quota state comes from `anthropic-ratelimit-unified-*` response headers —
+  no usage-endpoint dependency (setup-tokens lack the scope for it; see S1).
+- Tokens live in the macOS Keychain (service `accountant`). Config holds
+  metadata only — never a token. Client keys are stored as SHA-256 hashes.
+
+## Install
+
+```sh
+go build ./cmd/accountant
+# put the binary on your PATH, e.g.:
+cp accountant /opt/homebrew/bin/
+```
+
+## Setup
+
+```sh
+# 1. Register each subscription (token read from stdin with echo off,
+#    validated against the API, stored in the Keychain):
+accountant account add claude --label work --priority 10
+accountant account add claude --label personal --priority 20
+
+# 2. Create a client key (shown once — store it now):
+accountant client add macbook
+
+# 3. Start the service (launchd user agent, restarts on login):
+accountant service install
+
+# 4. Check everything:
+accountant doctor
+accountant status
+```
+
+## Connect Claude Code
+
+```sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+export ANTHROPIC_AUTH_TOKEN=<client key from step 2>
+export ENABLE_TOOL_SEARCH=true
+```
+
+`accountant env` prints the same block. The equivalent `env` block in
+`~/.claude/settings.json` works too.
+
+**Known losses behind the proxy** (Anthropic's gateway rules, not ours):
+no Remote Control, no claude.ai connectors, no `/login` account display.
+Local MCP servers still work. A native `/login` session outside the proxy
+(without these env vars) stays available as an escape hatch.
+
+**3P apps**: any app that speaks the Anthropic Messages format can use the
+same base URL with the client key as `x-api-key` or `Authorization: Bearer`.
+Note (S1 finding): Anthropic gates setup-token inference on requests
+carrying the Claude Code system prompt. Apps that do not send it get an
+upstream 429 (`rate_limit_error`, "Error") regardless of quota.
+
+## Commands
+
+```
+accountant serve                 run the proxy in the foreground
+accountant account add|list|remove|test
+accountant client add|list|remove
+accountant env                   print the Claude Code env exports
+accountant status                per-account 5h/7d use, resets, cooldowns, pins
+accountant doctor                permissions, token tests, upstream reachability
+accountant service install|uninstall   launchd user service
+```
+
+## Files
+
+- `~/.config/accountant/config.toml` — accounts (metadata only) and client
+  key hashes. Mode `0600`, directory `0700`.
+- `~/.local/state/accountant/state.json` — quota snapshots, session pins,
+  cooldowns. Mode `0600`, guarded by `state.lock` (flock) shared by the
+  daemon and all CLI commands.
+- `~/Library/LaunchAgents/com.accountant.agent.plist` — the service.
+
+Accounts added or edited while the daemon runs take effect immediately;
+every routing decision re-reads config and state under the lock.
+
+## Recovery
+
+- An account that returns 401 leaves rotation until
+  `accountant account test ID` passes again.
+- When every account is exhausted, you see the true upstream 429 unchanged,
+  and Claude Code shows its normal limit message with the right reset time.
+- Token lasts one year; `accountant status` warns 30 days before expiry.
+  The fix is a fresh `claude setup-token` and `accountant account add`.
+
+## Development
+
+```sh
+gofmt -l .
+go build ./...
+go vet ./...
+go test ./... -race
+golangci-lint run
+```
+
+The test suite runs against a scripted fake upstream with a fake clock and
+covers the full validation plan in `DESIGN.md`: byte-identical pass-through,
+beta-header merge, pin stickiness across restarts, pre-byte failover, the
+cooldown chain, zero-eligible probes, and the safety limits. A test also
+scans logs to prove no token or session ID ever appears in them.
+
+## License
+
+Apache License 2.0. Copyright 2026 Sebastiano Poggi. See `LICENSE`.
