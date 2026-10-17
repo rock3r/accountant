@@ -1,0 +1,235 @@
+name: release
+
+# Tag-triggered release: cross-compiled builds for darwin/arm64,
+# linux amd64+arm64, windows amd64+arm64. The macOS binary is Developer ID
+# signed and notarized with the same Apple credentials as Spectre.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version shape and main ancestry
+        id: check
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]]; then
+            echo "tag $tag is not a semver release tag" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "tag $tag is not reachable from main" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version at $(git rev-parse HEAD)"
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: darwin-arm64, goos: darwin, goarch: arm64 }
+          - { name: linux-x86_64, goos: linux, goarch: amd64 }
+          - { name: linux-arm64, goos: linux, goarch: arm64 }
+          - { name: windows-x86_64, goos: windows, goarch: amd64 }
+          - { name: windows-arm64, goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          NAME: ${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          out="accountant"
+          if [ "$GOOS" = "windows" ]; then out="accountant.exe"; fi
+          CGO_ENABLED=0 go build -trimpath \
+            -ldflags "-s -w -X accountant/internal/cli.Version=$VERSION" \
+            -o "$out" ./cmd/accountant
+          mkdir -p "pkg/accountant-$VERSION-$NAME"
+          mv "$out" "pkg/accountant-$VERSION-$NAME/"
+          cp README.md LICENSE "pkg/accountant-$VERSION-$NAME/"
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          NAME: ${{ matrix.name }}
+          GOOS: ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+          if [ "$GOOS" = "windows" ]; then
+            (cd pkg && zip -r "accountant-$VERSION-$NAME.zip" "accountant-$VERSION-$NAME")
+          else
+            (cd pkg && tar -czf "accountant-$VERSION-$NAME.tar.gz" "accountant-$VERSION-$NAME")
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.name }}
+          path: |
+            pkg/accountant-*.zip
+            pkg/accountant-*.tar.gz
+          if-no-files-found: error
+
+  sign-macos:
+    name: Sign and notarize the macOS binary
+    needs: [validate, build]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pkg-darwin-arm64
+          path: pkg
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_DEVELOPER_ID_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_SIGNING_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_DEVELOPER_ID_P12"
+          test -n "$APPLE_DEVELOPER_ID_P12_PASSWORD"
+          test -n "$KEYCHAIN_PASSWORD"
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/accountant-signing.keychain-db"
+
+          echo "$APPLE_DEVELOPER_ID_P12" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -P "$APPLE_DEVELOPER_ID_P12_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Sign, notarize, and package
+        env:
+          APPLE_DEVELOPER_IDENTITY: ${{ secrets.APPLE_DEVELOPER_IDENTITY }}
+          APPLE_NOTARY_API_KEY: ${{ secrets.APPLE_NOTARY_API_KEY }}
+          APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+          APPLE_NOTARY_API_ISSUER: ${{ secrets.APPLE_NOTARY_API_ISSUER }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_DEVELOPER_IDENTITY"
+          test -n "$APPLE_NOTARY_API_KEY"
+          test -n "$APPLE_NOTARY_API_KEY_ID"
+          test -n "$APPLE_NOTARY_API_ISSUER"
+
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_API_KEY_ID}.p8"
+          echo "$APPLE_NOTARY_API_KEY" | base64 --decode > "$API_KEY_PATH"
+
+          tar -xzf pkg/accountant-$VERSION-darwin-arm64.tar.gz -C pkg
+          BIN="pkg/accountant-$VERSION-darwin-arm64/accountant"
+          chmod +x "$BIN"
+
+          codesign --sign "$APPLE_DEVELOPER_IDENTITY" \
+            --options runtime --timestamp --force "$BIN"
+          codesign --verify --verbose "$BIN"
+
+          # A bare binary cannot be stapled; notarizing the zip registers the
+          # cdhash with Apple and Gatekeeper fetches the ticket online.
+          (cd "pkg/accountant-$VERSION-darwin-arm64" && zip "accountant-$VERSION-darwin-arm64.zip" accountant README.md LICENSE)
+          xcrun notarytool submit "pkg/accountant-$VERSION-darwin-arm64/accountant-$VERSION-darwin-arm64.zip" \
+            --key "$API_KEY_PATH" --key-id "$APPLE_NOTARY_API_KEY_ID" \
+            --issuer "$APPLE_NOTARY_API_ISSUER" --wait
+
+      - name: Upload notarized macOS zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-darwin-arm64-notarized
+          path: pkg/accountant-*-darwin-arm64/accountant-*-darwin-arm64.zip
+          if-no-files-found: error
+
+      - name: Clean up Apple credentials and signing keychain
+        if: always()
+        env:
+          APPLE_NOTARY_API_KEY_ID: ${{ secrets.APPLE_NOTARY_API_KEY_ID }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/accountant-signing.keychain-db"
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          if [ -n "${APPLE_NOTARY_API_KEY_ID:-}" ]; then
+            rm -f "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_API_KEY_ID}.p8"
+          fi
+
+  publish:
+    name: Publish GitHub release
+    needs: [validate, build, sign-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage release files
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Unsigned darwin tarball is superseded by the notarized zip.
+          rm -f "artifacts/pkg-darwin-arm64/accountant-$VERSION-darwin-arm64.tar.gz"
+          find artifacts \( -name 'accountant-*.zip' -o -name 'accountant-*.tar.gz' \) | while read -r f; do
+            cp "$f" release/
+          done
+          (cd release && shasum -a 256 accountant-* > checksums.txt)
+          cat > release/NOTES.md <<'EOF'
+          Multi-subscription rollover proxy for Claude. See README.md for setup.
+
+          - macOS (Apple Silicon): signed and notarized, download the darwin-arm64 zip
+          - Linux: x86_64 and arm64 tarballs
+          - Windows: x86_64 and arm64 zips
+
+          Verify downloads against checksums.txt.
+          EOF
+          ls -la release/
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "accountant $TAG" \
+            --notes-file release/NOTES.md \
+            release/accountant-* release/checksums.txt

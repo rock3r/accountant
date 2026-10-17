@@ -6,19 +6,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"golang.org/x/sys/unix"
 )
 
-// Locked runs fn while holding an exclusive flock on the lock file at path.
-// The lock is process- and goroutine-safe at the OS level; callers must
-// still serialize goroutines within their own process before calling Locked.
+// Locked runs fn while holding an exclusive OS-level lock on the lock file
+// at path. The lock is process- and goroutine-safe at the OS level; callers
+// must still serialize goroutines within their own process before calling
+// Locked.
 func Locked(path string, fn func() error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
+	if err := os.Chmod(dir, 0700); err != nil { // no-op where unsupported
 		return err
 	}
 	lock, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
@@ -26,9 +25,9 @@ func Locked(path string, fn func() error) error {
 		return err
 	}
 	defer func() { _ = lock.Close() }()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX); err != nil {
+	if err := lockFile(lock); err != nil {
 		return fmt.Errorf("locking %s: %w", path, err)
 	}
-	defer func() { _ = unix.Flock(int(lock.Fd()), unix.LOCK_UN) }()
+	defer func() { _ = unlockFile(lock) }()
 	return fn()
 }

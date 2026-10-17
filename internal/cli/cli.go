@@ -11,6 +11,9 @@ import (
 	"accountant/internal/state"
 )
 
+// Version is stamped at release time via -ldflags "-X accountant/internal/cli.Version=...".
+var Version = "dev"
+
 // Run dispatches argv (without the program name) and returns an exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -39,6 +42,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return cmdService(args[1:], paths, stdout, stderr)
 	case "-h", "--help", "help":
 		usage(stdout)
+		return 0
+	case "version", "--version", "-v":
+		fmt.Fprintf(stdout, "accountant %s\n", Version)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
