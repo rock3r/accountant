@@ -1,15 +1,16 @@
 /**
- * accountant providers for pi.
+ * accountant provider for pi.
  *
  * Routes Claude and Codex traffic through the local accountant proxy
- * (http://127.0.0.1:8787), which rolls over between subscriptions:
+ * (http://127.0.0.1:8787), which rolls over between subscriptions. One
+ * provider lists every model the proxy can serve: Claude models use the
+ * provider-level Anthropic Messages API, Codex models override api/baseUrl
+ * per model to the OpenAI Responses API under /codex. (Model IDs never
+ * collide across the families: claude-… vs gpt-… and codex-….)
  *
- *   - "accountant"        Anthropic models via GET /v1/models
- *   - "accountant-codex"  Codex models via GET /codex/models
- *
- * Both catalogs are discovered live at startup and through refreshModels,
+ * The catalog is discovered live at startup and through refreshModels,
  * cached in ~/.pi/agent/accountant-models-cache.json for when the daemon is
- * down, and fall back to the embedded static catalog (refreshed at release
+ * down, and falls back to the embedded static catalog (refreshed at release
  * time by integrations/update-catalog.mjs).
  *
  * The client key lives in the login Keychain (service "accountant-client",
@@ -141,6 +142,10 @@ function mapCodex(m: CodexModel): ProviderModelConfig {
 	return {
 		id: m.slug,
 		name: m.display_name?.trim() || m.slug,
+		// Per-model overrides: the Codex family speaks OpenAI Responses
+		// under the /codex mount, not the provider-level Anthropic API.
+		api: "openai-responses",
+		baseUrl: `${BASE_URL}/codex`,
 		reasoning: efforts.length > 0,
 		thinkingLevelMap: codexThinkingMap(efforts),
 		input: input.length > 0 ? input : ["text"],
@@ -229,9 +234,9 @@ export default async function (pi: ExtensionAPI) {
 
 	const key = clientKey();
 	if (key) {
-		// Refresh each provider independently: an old daemon without the
+		// Refresh each family independently: an old daemon without the
 		// codex mount (or one with no codex accounts) must not lose the
-		// other catalog.
+		// other family's catalog.
 		const [a, c] = await Promise.allSettled([fetchAnthropicModels(key), fetchCodexModels(key)]);
 		if (a.status === "fulfilled" || c.status === "fulfilled") {
 			catalog = {
@@ -248,47 +253,36 @@ export default async function (pi: ExtensionAPI) {
 		allowNetwork?: boolean;
 	}): string | undefined => (context.credential?.type === "api_key" ? context.credential.key : undefined) ?? clientKey();
 
+	const allModels = (): ProviderModelConfig[] => [
+		...catalog.anthropic.map(mapAnthropic),
+		...codexPickerModels(catalog.codex).map(mapCodex),
+	];
+
 	pi.registerProvider("accountant", {
-		name: "accountant (Claude subscriptions)",
+		name: "accountant (subscription rollover)",
 		baseUrl: BASE_URL,
 		apiKey: "!security find-generic-password -s accountant-client -a pi -w",
 		api: "anthropic-messages",
-		models: catalog.anthropic.map(mapAnthropic),
+		models: allModels(),
 		refreshModels: async (context): Promise<ProviderModelConfig[]> => {
 			const k = credentialKey(context);
 			if (k && context.allowNetwork) {
-				try {
-					const list = await fetchAnthropicModels(k, context.signal);
-					catalog = { ...catalog, anthropic: list, fetchedAt: new Date().toISOString() };
+				// Refresh each family independently: a daemon that serves
+				// only one side must not lose the other's catalog.
+				const [a, c] = await Promise.allSettled([
+					fetchAnthropicModels(k, context.signal),
+					fetchCodexModels(k, context.signal),
+				]);
+				if (a.status === "fulfilled" || c.status === "fulfilled") {
+					catalog = {
+						anthropic: a.status === "fulfilled" ? a.value : catalog.anthropic,
+						codex: c.status === "fulfilled" ? c.value : catalog.codex,
+						fetchedAt: new Date().toISOString(),
+					};
 					writeCache(catalog);
-					return list.map(mapAnthropic);
-				} catch {
-					// Fall through to the cached/static catalog.
 				}
 			}
-			return catalog.anthropic.map(mapAnthropic);
-		},
-	});
-
-	pi.registerProvider("accountant-codex", {
-		name: "accountant (Codex subscriptions)",
-		baseUrl: `${BASE_URL}/codex`,
-		apiKey: "!security find-generic-password -s accountant-client -a pi -w",
-		api: "openai-responses",
-		models: codexPickerModels(catalog.codex).map(mapCodex),
-		refreshModels: async (context): Promise<ProviderModelConfig[]> => {
-			const k = credentialKey(context);
-			if (k && context.allowNetwork) {
-				try {
-					const list = await fetchCodexModels(k, context.signal);
-					catalog = { ...catalog, codex: list, fetchedAt: new Date().toISOString() };
-					writeCache(catalog);
-					return codexPickerModels(list).map(mapCodex);
-				} catch {
-					// Fall through to the cached/static catalog.
-				}
-			}
-			return codexPickerModels(catalog.codex).map(mapCodex);
+			return allModels();
 		},
 	});
 }

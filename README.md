@@ -124,9 +124,10 @@ For a **live model catalog** (every model the subscriptions can use,
 straight from the proxied `GET /v1/models` and `GET /codex/models`, instead
 of the static list above), copy `integrations/pi/accountant.ts` to
 `~/.pi/agent/extensions/` and drop the static `accountant` block from
-`models.json`. The extension registers two providers — `accountant` (Claude
-models, Anthropic Messages API) and `accountant-codex` (Codex models, OpenAI
-Responses API) — fetches both catalogs at startup (a daemon that only
+`models.json`. The extension registers one `accountant` provider listing
+every model the proxy can serve — Claude models on the Anthropic Messages
+API, Codex models with per-model overrides onto the OpenAI Responses API
+under `/codex` — fetches both catalogs at startup (a daemon that only
 serves one side keeps the other side's cached data), caches them under
 `~/.pi/agent/accountant-models-cache.json` for when the daemon is down, and
 refreshes them when the model picker reloads. Codex models carry their live
