@@ -6,8 +6,11 @@ package refresh
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"accountant/internal/lockfile"
@@ -16,8 +19,15 @@ import (
 )
 
 // LockPath returns the per-credential lock file, next to the state file.
+// Overlong refs or refs with path separators are hashed so the filename
+// stays a valid single path component for any vault ref.
 func LockPath(stateFile, ref string) string {
-	return filepath.Join(filepath.Dir(stateFile), "refresh-"+ref+".lock")
+	name := ref
+	if len(name) > 100 || strings.ContainsAny(name, "/\\") {
+		sum := sha256.Sum256([]byte(ref))
+		name = hex.EncodeToString(sum[:8])
+	}
+	return filepath.Join(filepath.Dir(stateFile), "refresh-"+name+".lock")
 }
 
 // IfNeeded runs the read-check-refresh-write cycle for ref under the

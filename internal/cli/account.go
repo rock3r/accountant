@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 
 	"accountant/internal/config"
 	"accountant/internal/lockfile"
+	providerpkg "accountant/internal/provider"
 	"accountant/internal/provider/codex"
 	"accountant/internal/refresh"
 	"accountant/internal/state"
@@ -141,7 +143,16 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 		// long-idle imported login validates against a fresh access token.
 		// The rotation is persisted under the shared refresh lock at once.
 		fresh, didRefresh, err := ensureFreshCredential(ctx, prov, paths, id, cred)
+		var rerr *providerpkg.RefreshError
 		switch {
+		case errors.As(err, &rerr) && rerr.Permanent:
+			// The refresh token is dead (revoked/reused): the access token
+			// may still validate, but the daemon would mark the account
+			// auth-broken on its first refresh. Refuse the import.
+			cleanupFailedAdd(id, provider, stderr)
+			fmt.Fprintf(stderr, "error: credential refresh permanently failed: %v\n", err)
+			fmt.Fprintln(stderr, "Run `codex login` again and re-import the fresh auth.json.")
+			return 1
 		case err != nil:
 			fmt.Fprintf(stderr, "warning: credential refresh failed: %v (validating as-is)\n", err)
 		default:
