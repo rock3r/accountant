@@ -345,7 +345,7 @@ func accountTest(id string, paths config.Paths, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if fresh, refreshed, err := ensureFreshCredential(ctx, prov, acct.CredentialRef, cred); err != nil {
+	if fresh, refreshed, err := ensureFreshCredential(ctx, prov, paths, acct.CredentialRef, cred); err != nil {
 		fmt.Fprintf(stderr, "FAIL %s: %v\n", id, err)
 		return 1
 	} else if refreshed {

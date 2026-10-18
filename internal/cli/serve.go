@@ -35,7 +35,7 @@ func cmdServe(_ []string, paths config.Paths, stderr io.Writer) int {
 		"anthropic": anthropic.New(""),
 		"codex":     codex.New(""),
 	}
-	px := proxy.New(paths.ConfigFile, rt, vault.NewKeychain(), providers, log)
+	px := proxy.New(paths.ConfigFile, paths.StateFile, rt, vault.NewKeychain(), providers, log)
 
 	srv := &http.Server{
 		Addr:    cfg.Listen,
@@ -55,6 +55,7 @@ func cmdServe(_ []string, paths config.Paths, stderr io.Writer) int {
 	}()
 
 	log.Info("accountant serving", "listen", cfg.Listen, "config", paths.ConfigFile, "state", paths.StateFile)
+	fmt.Fprintf(stderr, "note: %s", disclaimer)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(stderr, "error: %v\n", err)
 		return 1

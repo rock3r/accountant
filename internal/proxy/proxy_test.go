@@ -335,7 +335,7 @@ func TestPinSurvivesDaemonRestart(t *testing.T) {
 	// "Restart": new router+proxy over the same state and config.
 	log := slog.New(slog.NewTextHandler(r.logBuf, nil))
 	rt := router.New(r.cfgPath, r.store, r.clock, log)
-	r.proxy = New(r.cfgPath, rt, r.vault, r.proxy.providers, log)
+	r.proxy = New(r.cfgPath, r.store.File(), rt, r.vault, r.proxy.providers, log)
 	r.srv.Close()
 	r.srv = httptest.NewServer(r.proxy.Handler())
 	t.Cleanup(r.srv.Close)

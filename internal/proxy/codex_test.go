@@ -100,7 +100,7 @@ func newCodexRig(t *testing.T, accounts []config.Account, creds map[string][]byt
 	r.logBuf = &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(r.logBuf, nil))
 	rt := router.New(r.cfgPath, r.store, r.clock, log)
-	r.proxy = New(r.cfgPath, rt, r.vault, map[string]provider.Provider{
+	r.proxy = New(r.cfgPath, r.store.File(), rt, r.vault, map[string]provider.Provider{
 		"codex": codex.NewForTest(r.up.srv.URL, refreshURL),
 	}, log)
 	r.srv = httptest.NewServer(r.proxy.Handler())

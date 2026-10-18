@@ -108,7 +108,7 @@ func cmdDoctor(paths config.Paths, stdout, stderr io.Writer) int {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		cred, _, err = ensureFreshCredential(ctx, prov, a.CredentialRef, cred)
+		cred, _, err = ensureFreshCredential(ctx, prov, paths, a.CredentialRef, cred)
 		if err == nil {
 			err = prov.Validate(ctx, cred)
 		}

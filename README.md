@@ -9,6 +9,13 @@ the current one runs out — no manual account switching.
 Status: v1, local proof of concept on one Mac. See `DESIGN.md` for the
 binding design and `docs/s1-results.md` for the verified upstream facts.
 
+## Disclaimer
+
+accountant is experimental software, provided as-is, purely for
+experimentation, and used entirely at your own risk. Check the terms of
+service of your model providers before routing traffic through it. You are
+solely responsible for anything you do with it.
+
 ## How it works
 
 - One Go binary. A loopback proxy on `127.0.0.1:8787` speaks the Anthropic
@@ -112,6 +119,13 @@ Then `/model` and pick `accountant/…`. Keeping it a separate provider
 leaves Pi's built-in Anthropic provider untouched as a fallback. The
 `!security …` form reads the key from the login Keychain at request time;
 a literal key or `$ENV_VAR` work too.
+
+For a **live model catalog** (every model the subscription can use, straight
+from the proxied `GET /v1/models`, instead of the static list above), copy
+`integrations/pi/accountant.ts` to `~/.pi/agent/extensions/` and drop the
+static `accountant` block from `models.json`. The extension fetches the
+catalog at startup, caches it under `~/.pi/agent/accountant-models-cache.json`
+for when the daemon is down, and refreshes it when the model picker reloads.
 
 ## Connect Codex (ChatGPT subscriptions)
 

@@ -22,6 +22,7 @@ import (
 
 	"accountant/internal/config"
 	"accountant/internal/provider"
+	"accountant/internal/refresh"
 	"accountant/internal/router"
 	"accountant/internal/vault"
 )
@@ -42,6 +43,7 @@ const (
 // Proxy serves the client-facing HTTP API.
 type Proxy struct {
 	cfgPath   string
+	stateFile string
 	router    *router.Router
 	vault     vault.Vault
 	providers map[string]provider.Provider
@@ -61,8 +63,8 @@ type Proxy struct {
 }
 
 // New creates a Proxy.
-func New(cfgPath string, r *router.Router, v vault.Vault, providers map[string]provider.Provider, log *slog.Logger) *Proxy {
-	return &Proxy{cfgPath: cfgPath, router: r, vault: v, providers: providers, log: log, refreshes: map[string]*refreshCall{}}
+func New(cfgPath, stateFile string, r *router.Router, v vault.Vault, providers map[string]provider.Provider, log *slog.Logger) *Proxy {
+	return &Proxy{cfgPath: cfgPath, stateFile: stateFile, router: r, vault: v, providers: providers, log: log, refreshes: map[string]*refreshCall{}}
 }
 
 // hopByHop are stripped in both directions; headers named by the Connection
@@ -383,19 +385,20 @@ func (p *Proxy) refreshIfNeeded(ctx context.Context, prov provider.Provider, acc
 	if !ok || expiry.After(time.Now().Add(refreshMargin)) {
 		return cred, nil
 	}
-	refresher, ok := prov.(provider.Refresher)
-	if !ok {
+	if _, ok := prov.(provider.Refresher); !ok {
 		return cred, nil
 	}
 	p.log.Info("refreshing credential", "account", acct.ID, "expired", expiry.Format(time.RFC3339))
-	return p.refreshSingleFlight(ctx, refresher, acct.CredentialRef, cred)
+	return p.refreshSingleFlight(ctx, prov, acct.CredentialRef)
 }
 
-// refreshSingleFlight coalesces concurrent refreshes of one vault ref.
-// Followers wait for the leader's result instead of refreshing again (a
-// second refresh with the same rotating refresh token would be rejected
-// as reused).
-func (p *Proxy) refreshSingleFlight(ctx context.Context, refresher provider.Refresher, ref string, cred []byte) ([]byte, error) {
+// refreshSingleFlight coalesces concurrent refreshes of one vault ref
+// in-process. The leader runs refresh.IfNeeded, which re-reads the vault
+// under the shared per-credential lock: a worker (or CLI command) that
+// arrives after another refresh completed finds a fresh credential and
+// makes no second exchange. This matters because Codex refresh tokens
+// rotate — a duplicate exchange fails as refresh_token_reused.
+func (p *Proxy) refreshSingleFlight(ctx context.Context, prov provider.Provider, ref string) ([]byte, error) {
 	p.refreshMu.Lock()
 	if c, ok := p.refreshes[ref]; ok {
 		p.refreshMu.Unlock()
@@ -413,18 +416,13 @@ func (p *Proxy) refreshSingleFlight(ctx context.Context, refresher provider.Refr
 	// The refresh outlives a client disconnect: a cancelled client request
 	// must not waste a rotating refresh token round-trip.
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
-	newCred, err := refresher.Refresh(rctx, cred)
+	cred, _, err := refresh.IfNeeded(rctx, p.vault, prov, p.stateFile, ref, refreshMargin)
 	cancel()
-	if err == nil {
-		if perr := p.vault.Put(ref, newCred); perr != nil {
-			newCred, err = nil, perr
-		}
-	}
 
 	p.refreshMu.Lock()
 	delete(p.refreshes, ref)
 	p.refreshMu.Unlock()
-	c.cred, c.err = newCred, err
+	c.cred, c.err = cred, err
 	close(c.done)
 	return c.cred, c.err
 }
