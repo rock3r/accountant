@@ -3,9 +3,11 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,7 +16,10 @@ import (
 	"golang.org/x/term"
 
 	"accountant/internal/config"
-	"accountant/internal/provider/anthropic"
+	"accountant/internal/lockfile"
+	providerpkg "accountant/internal/provider"
+	"accountant/internal/provider/codex"
+	"accountant/internal/refresh"
 	"accountant/internal/state"
 	"accountant/internal/vault"
 )
@@ -52,9 +57,13 @@ var idSafe = regexp.MustCompile(`[^a-z0-9-]+`)
 func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int {
 	provider := ""
 	label := ""
+	from := ""
+	force := false
 	priority := 10
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--force":
+			force = true
 		case "--label":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "--label needs a value")
@@ -62,6 +71,13 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 			}
 			i++
 			label = args[i]
+		case "--from":
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, "--from needs a value")
+				return 2
+			}
+			i++
+			from = args[i]
 		case "--priority":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "--priority needs a value")
@@ -84,8 +100,8 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 	if provider == "claude" {
 		provider = "anthropic"
 	}
-	if provider != "anthropic" {
-		fmt.Fprintf(stderr, "unknown provider %q (v1 supports: claude)\n", provider)
+	if provider != "anthropic" && provider != "codex" {
+		fmt.Fprintf(stderr, "unknown provider %q (supported: claude, codex)\n", provider)
 		return 2
 	}
 	if label == "" {
@@ -93,6 +109,133 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 		return 2
 	}
 
+	prov := providerFor(provider)
+
+	// The account ID is generated before any credential work: for providers
+	// with rotating credentials (codex) the vault entry is created before
+	// validation, so a rotated refresh token is never lost when a later
+	// step fails.
+	id := generateAccountID(paths, label, stderr)
+	if id == "" {
+		return 1
+	}
+
+	var cred []byte
+	switch provider {
+	case "anthropic":
+		var ok bool
+		cred, ok = accountAddAnthropic(label, stdout, stderr)
+		if !ok {
+			return 1
+		}
+	case "codex":
+		var ok bool
+		cred, ok = accountAddCodex(from, id, force, stdout, stderr)
+		if !ok {
+			return 1
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if provider == "codex" {
+		// Refresh an expired/near-expiry credential before validating, so a
+		// long-idle imported login validates against a fresh access token.
+		// The rotation is persisted under the shared refresh lock at once.
+		fresh, didRefresh, err := ensureFreshCredential(ctx, prov, paths, id, cred)
+		var rerr *providerpkg.RefreshError
+		switch {
+		case errors.As(err, &rerr) && rerr.Permanent:
+			// The refresh token is dead (revoked/reused): the access token
+			// may still validate, but the daemon would mark the account
+			// auth-broken on its first refresh. Refuse the import.
+			cleanupFailedAdd(id, provider, stderr)
+			fmt.Fprintf(stderr, "error: credential refresh permanently failed: %v\n", err)
+			fmt.Fprintln(stderr, "Run `codex login` again and re-import the fresh auth.json.")
+			return 1
+		case err != nil:
+			fmt.Fprintf(stderr, "warning: credential refresh failed: %v (validating as-is)\n", err)
+		default:
+			cred = fresh
+			if didRefresh {
+				fmt.Fprintln(stdout, "Refreshed the OAuth tokens.")
+			}
+		}
+	}
+	if err := prov.Validate(ctx, cred); err != nil {
+		cleanupFailedAdd(id, provider, stderr)
+		fmt.Fprintf(stderr, "error: token validation failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "Token validated.")
+
+	if provider == "anthropic" {
+		// Nothing has rotated; store only after validation passes.
+		if err := vault.NewKeychain().Put(id, cred); err != nil {
+			fmt.Fprintf(stderr, "error: storing credential in Keychain: %v\n", err)
+			return 1
+		}
+	}
+	minted := time.Now().Format("2006-01-02")
+	err := config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
+		c.Accounts = append(c.Accounts, config.Account{
+			ID:            id,
+			Provider:      provider,
+			Label:         label,
+			Priority:      priority,
+			CredentialRef: id,
+			MintedAt:      minted,
+		})
+		return nil
+	})
+	if err != nil {
+		cleanupFailedAdd(id, provider, stderr)
+		fmt.Fprintf(stderr, "error: updating config: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Added account %q (provider %s, priority %d).\n", id, provider, priority)
+	return 0
+}
+
+// generateAccountID derives a unique account ID from the label. Returns ""
+// after printing an error.
+func generateAccountID(paths config.Paths, label string, stderr io.Writer) string {
+	id := idSafe.ReplaceAllString(strings.ToLower(label), "-")
+	id = strings.Trim(id, "-")
+	if id == "" {
+		id = "account"
+	}
+	base := id
+	for n := 2; ; n++ {
+		cfg, err := config.Load(paths.ConfigFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return ""
+		}
+		if cfg.FindAccount(id) == nil {
+			return id
+		}
+		id = fmt.Sprintf("%s-%d", base, n)
+	}
+}
+
+// cleanupFailedAdd removes the vault entry for an account that never made
+// it into the config. Codex entries are always preserved instead: the vault
+// holds the freshest rotated credential by construction (stored before
+// validation, rotated under the refresh lock), while the source auth.json
+// may already be stale. A re-run of the same command resumes from it;
+// --force re-imports from the file instead.
+func cleanupFailedAdd(id, provider string, stderr io.Writer) {
+	if provider == "codex" {
+		fmt.Fprintf(stderr, "note: the OAuth tokens are preserved in the Keychain under ref %q; re-running the same command resumes from them (or re-import from a corrected file with --force).\n", id)
+		return
+	}
+	_ = vault.NewKeychain().Delete(id)
+}
+
+// accountAddAnthropic runs the interactive setup-token flow and returns
+// the pasted token. ok is false on any input error.
+func accountAddAnthropic(label string, stdout, stderr io.Writer) (cred []byte, ok bool) {
 	fmt.Fprintf(stdout, `To register this subscription:
 
   1. In a terminal, run Claude Code against a scratch config dir so your
@@ -110,63 +253,69 @@ Token: `, label, label)
 	fmt.Fprintln(stdout)
 	if err != nil {
 		fmt.Fprintf(stderr, "error: reading token: %v\n", err)
-		return 1
+		return nil, false
 	}
 	if token == "" {
 		fmt.Fprintln(stderr, "error: empty token")
-		return 1
+		return nil, false
 	}
+	return []byte(token), true
+}
 
-	prov := anthropic.New("")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := prov.Validate(ctx, []byte(token)); err != nil {
-		fmt.Fprintf(stderr, "error: token validation failed: %v\n", err)
-		return 1
-	}
-	fmt.Fprintln(stdout, "Token validated.")
-
-	id := idSafe.ReplaceAllString(strings.ToLower(label), "-")
-	id = strings.Trim(id, "-")
-	if id == "" {
-		id = "account"
-	}
-	base := id
-	for n := 2; ; n++ {
-		cfg, err := config.Load(paths.ConfigFile)
-		if err != nil {
-			fmt.Fprintf(stderr, "error: %v\n", err)
-			return 1
+// accountAddCodex imports the OAuth token triple from a Codex CLI login
+// (auth.json). ok is false on any read/parse error. A parseable credential
+// already in the vault under id comes from a previous attempt that rotated
+// the tokens and then failed; it takes precedence over the (now stale)
+// source file, unless --force is given to re-import from the file (the
+// escape hatch when the preserved entry itself is bad).
+func accountAddCodex(from, id string, force bool, stdout, stderr io.Writer) (cred []byte, ok bool) {
+	if !force {
+		if existing, err := vault.NewKeychain().Get(id); err == nil {
+			if _, err := codex.ParseCredential(existing); err == nil {
+				fmt.Fprintf(stdout, "Reusing the rotated OAuth tokens stored under ref %q from the previous attempt.\n", id)
+				return existing, true
+			}
 		}
-		if cfg.FindAccount(id) == nil {
-			break
-		}
-		id = fmt.Sprintf("%s-%d", base, n)
 	}
-
-	if err := vault.NewKeychain().Put(id, []byte(token)); err != nil {
-		fmt.Fprintf(stderr, "error: storing credential in Keychain: %v\n", err)
-		return 1
+	if from == "" {
+		from = defaultCodexAuthPath()
 	}
-	minted := time.Now().Format("2006-01-02")
-	err = config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
-		c.Accounts = append(c.Accounts, config.Account{
-			ID:            id,
-			Provider:      provider,
-			Label:         label,
-			Priority:      priority,
-			CredentialRef: id,
-			MintedAt:      minted,
-		})
-		return nil
-	})
+	cred, err := codex.ImportAuthFile(from)
 	if err != nil {
-		_ = vault.NewKeychain().Delete(id)
-		fmt.Fprintf(stderr, "error: updating config: %v\n", err)
-		return 1
+		fmt.Fprintf(stderr, "error: importing Codex login: %v\n", err)
+		fmt.Fprintln(stderr, "hint: log in with a dedicated Codex CLI profile first:")
+		fmt.Fprintln(stderr, "  CODEX_HOME=\"$(mktemp -d)/codex-profile\" codex login")
+		return nil, false
 	}
-	fmt.Fprintf(stdout, "Added account %q (provider %s, priority %d).\n", id, provider, priority)
-	return 0
+	// Store immediately: once accountant refreshes these tokens the source
+	// auth.json is stale, so the vault must hold them before any fallible
+	// step that follows.
+	if err := vault.NewKeychain().Put(id, cred); err != nil {
+		fmt.Fprintf(stderr, "error: storing credential in Keychain: %v\n", err)
+		return nil, false
+	}
+	fmt.Fprintf(stdout, `Imported Codex OAuth tokens from %s.
+
+NOTE: accountant refreshes these tokens itself from now on, and Codex
+refresh tokens rotate on every refresh. After accountant's first refresh,
+the login in %s can no longer refresh on its own. Point Codex CLI at the
+proxy (see `+"`accountant env`"+`); if you also want a direct, non-proxied
+Codex login, keep it in a separate CODEX_HOME with its own auth.json.
+`, from, from)
+	return cred, true
+}
+
+// defaultCodexAuthPath resolves the Codex CLI's auth.json: $CODEX_HOME
+// first, else ~/.codex.
+func defaultCodexAuthPath() string {
+	if home := os.Getenv("CODEX_HOME"); home != "" {
+		return filepath.Join(home, "auth.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "auth.json"
+	}
+	return filepath.Join(home, ".codex", "auth.json")
 }
 
 // readSecret reads one line with echo off when stdin is a terminal, else one
@@ -211,40 +360,76 @@ func accountRemove(id string, paths config.Paths, stdout, stderr io.Writer) int 
 	}
 	acct := cfg.FindAccount(id)
 	if acct == nil {
-		fmt.Fprintf(stderr, "error: no account %q\n", id)
-		return 1
+		// Not in the config: an orphaned vault entry may remain from a
+		// failed `account add` (codex entries are preserved deliberately).
+		return lockRemoval(paths, id, stderr, func() int {
+			if err := vault.NewKeychain().Delete(id); err == nil {
+				fmt.Fprintf(stdout, "Removed orphaned credential %q from the Keychain (no such account in config).\n", id)
+				return 0
+			}
+			fmt.Fprintf(stderr, "error: no account %q\n", id)
+			return 1
+		})
 	}
 	credRef := acct.CredentialRef
-	err = config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
-		if c.FindAccount(id) == nil {
-			return fmt.Errorf("no account %q", id)
-		}
-		kept := c.Accounts[:0]
-		for _, a := range c.Accounts {
-			if a.ID != id {
-				kept = append(kept, a)
+	// Take the per-credential refresh lock around the whole removal, so an
+	// in-flight daemon refresh cannot re-create the vault entry after we
+	// delete it (its Put would otherwise resurrect the credential).
+	return lockRemoval(paths, credRef, stderr, func() int {
+		err = config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
+			if c.FindAccount(id) == nil {
+				return fmt.Errorf("no account %q", id)
 			}
+			kept := c.Accounts[:0]
+			for _, a := range c.Accounts {
+				if a.ID != id {
+					kept = append(kept, a)
+				}
+			}
+			c.Accounts = kept
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
 		}
-		c.Accounts = kept
+		if err := vault.NewKeychain().Delete(credRef); err != nil {
+			fmt.Fprintf(stderr, "warning: removing credential from Keychain: %v\n", err)
+		}
+		st := storeFor(paths)
+		if err := st.Locked(func(s *state.State) (bool, error) {
+			delete(s.Accounts, id)
+			s.DropPinsFor(id)
+			return true, nil
+		}); err != nil {
+			fmt.Fprintf(stderr, "warning: cleaning state: %v\n", err)
+		}
+		fmt.Fprintf(stdout, "Removed account %q.\n", id)
+		return 0
+	})
+}
+
+// lockRemoval runs fn while holding the per-credential refresh lock, so a
+// credential deletion cannot interleave with a refresh's
+// read-exchange-write cycle. If the lock cannot be taken (e.g. the state
+// directory is unwritable), fn still runs without it — removal must not
+// silently report success while doing nothing; the race window is narrow
+// and the daemon fails safe.
+func lockRemoval(paths config.Paths, credRef string, stderr io.Writer, fn func() int) int {
+	rc := 0
+	run := false
+	err := lockfile.Locked(refresh.LockPath(paths.StateFile, credRef), func() error {
+		run = true
+		rc = fn()
 		return nil
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 1
+		fmt.Fprintf(stderr, "warning: refresh lock: %v (proceeding without it)\n", err)
 	}
-	if err := vault.NewKeychain().Delete(credRef); err != nil {
-		fmt.Fprintf(stderr, "warning: removing credential from Keychain: %v\n", err)
+	if !run {
+		rc = fn()
 	}
-	st := storeFor(paths)
-	if err := st.Locked(func(s *state.State) (bool, error) {
-		delete(s.Accounts, id)
-		s.DropPinsFor(id)
-		return true, nil
-	}); err != nil {
-		fmt.Fprintf(stderr, "warning: cleaning state: %v\n", err)
-	}
-	fmt.Fprintf(stdout, "Removed account %q.\n", id)
-	return 0
+	return rc
 }
 
 func accountTest(id string, paths config.Paths, stdout, stderr io.Writer) int {
@@ -263,9 +448,25 @@ func accountTest(id string, paths config.Paths, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "error: reading credential: %v\n", err)
 		return 1
 	}
-	prov := anthropic.New("")
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	prov := providerFor(acct.Provider)
+	if prov == nil {
+		fmt.Fprintf(stderr, "error: unknown provider %q\n", acct.Provider)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	// ensureFreshCredential returns the current vault value, which may have
+	// been refreshed by the daemon while this command waited on the shared
+	// lock — always validate that value, not the pre-lock read.
+	if fresh, refreshed, err := ensureFreshCredential(ctx, prov, paths, acct.CredentialRef, cred); err != nil {
+		fmt.Fprintf(stderr, "FAIL %s: %v\n", id, err)
+		return 1
+	} else {
+		cred = fresh
+		if refreshed {
+			fmt.Fprintln(stdout, "Refreshed the OAuth tokens.")
+		}
+	}
 	if err := prov.Validate(ctx, cred); err != nil {
 		fmt.Fprintf(stderr, "FAIL %s: %v\n", id, err)
 		return 1

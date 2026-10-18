@@ -15,6 +15,7 @@ import (
 	"accountant/internal/config"
 	"accountant/internal/provider"
 	"accountant/internal/provider/anthropic"
+	"accountant/internal/provider/codex"
 	"accountant/internal/proxy"
 	"accountant/internal/router"
 	"accountant/internal/vault"
@@ -32,8 +33,9 @@ func cmdServe(_ []string, paths config.Paths, stderr io.Writer) int {
 	rt := router.New(paths.ConfigFile, store, router.RealClock(), log)
 	providers := map[string]provider.Provider{
 		"anthropic": anthropic.New(""),
+		"codex":     codex.New(""),
 	}
-	px := proxy.New(paths.ConfigFile, rt, vault.NewKeychain(), providers, log)
+	px := proxy.New(paths.ConfigFile, paths.StateFile, rt, vault.NewKeychain(), providers, log)
 
 	srv := &http.Server{
 		Addr:    cfg.Listen,

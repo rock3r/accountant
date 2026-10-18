@@ -285,8 +285,9 @@ rate-limits too). Correctness must never depend on the poller.
 
 - Serve: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `GET /v1/models`
   (forward upstream), `GET /healthz` (local, no auth). Reject other paths with 404.
-  Mount the same handlers under `/anthropic/` as well, so a later provider can take
-  `/codex/` without breaking existing client URLs.
+  Mount the same handlers under `/anthropic/` as well. The Codex provider owns
+  `/codex/`: `POST /codex/responses` and `GET /codex/models` (S4); other `/codex/`
+  paths 404.
 - Forward unchanged: body bytes, `anthropic-version`, all `x-claude-code-*` headers,
   and `Accept-Encoding`. The core proxy also forwards `anthropic-beta` untouched;
   the one merge in flow step 3 happens inside the provider's `RewriteRequest` (it
@@ -328,9 +329,9 @@ rate-limits too). Correctness must never depend on the poller.
   re-pin events. Never log credentials or bodies. (The model name lives only in the
   body, so v1 logs do not carry it.)
 
-### The provider seam (for Codex later; interface only in v1)
+### The provider seam (Codex implemented; see docs/s4-results.md)
 
-The router, vault, quota state, session pins, and client keys must not know Anthropic
+The router, vault, quota state, session pins, and client keys must not know provider
 details. They depend on this provider interface only:
 
 ```go
@@ -356,20 +357,29 @@ type Provider interface {
 }
 
 // Only for providers whose credentials expire. Claude setup-tokens do not
-// implement this; Codex OAuth will.
+// implement this; Codex OAuth does (spike S4).
 type Refresher interface {
     Refresh(ctx context.Context, cred []byte) (newCred []byte, err error)
 }
+
+// Added with the Codex provider: proactive expiry. The proxy refreshes
+// single-flight per account when the expiry is near (30 min), writes the
+// new credential to the vault before any request uses it, and treats a
+// permanent refresh failure as auth-broken without contacting upstream.
+type CredentialExpirer interface {
+    CredentialExpiry(cred []byte) (time.Time, bool)
+}
 ```
 
-Known Codex facts, for the future phase. The Codex CLI stores OAuth tokens (access,
-refresh, account ID) in `~/.codex/auth.json`, honors a per-profile home (`CODEX_HOME`),
-and accepts a `chatgpt_base_url` override (CliGate uses it). Its quota endpoint is
-undocumented, of the same shape as Claude's. Its credentials expire and need refresh,
-with exactly one writer allowed to refresh — if the proxy refreshes, the CLI must not.
-Its app-server daemon caches auth in memory (the caam warning). Spike S4 verifies all
-of this before anyone writes the Codex provider. The ChatGPT and Codex apps are out
-of scope until S4 shows a config surface that can point them at the proxy.
+Codex facts are verified in `docs/s4-results.md` (spike S4): OAuth token
+triple imported from a Codex CLI `auth.json`, `Authorization: Bearer` +
+`ChatGPT-Account-ID` request auth, `https://chatgpt.com/backend-api/codex`
+upstream, `x-codex-*` percent-scale quota headers mapped by window length,
+429 `usage_limit_reached` exhaustion, rotating refresh tokens against
+`auth.openai.com/oauth/token`, and the custom-`model_providers` client
+setup (`chatgpt_base_url` does not carry model traffic). The Codex CLI's
+app-server auth cache (the caam warning) is irrelevant here: the CLI holds
+no subscription tokens at all in the proxied setup.
 
 ### Files and config
 

@@ -7,6 +7,7 @@ package vault
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -16,9 +17,10 @@ import (
 
 const keychainService = "accountant"
 
-// safeToken restricts secrets and refs to characters that are safe to embed
-// in a double-quoted `security -i` command line. OAuth tokens and refs are
-// base64url-ish; anything outside this set is rejected rather than escaped.
+// safeToken restricts refs to characters that are safe to embed in a
+// double-quoted `security -i` command line. Secrets are hex-encoded before
+// storage (they can be structured JSON, e.g. Codex OAuth credentials), so
+// they are always inside this set by construction.
 var safeToken = regexp.MustCompile(`^[A-Za-z0-9._~+/=@:-]+$`)
 
 // Keychain is the macOS Keychain vault backend.
@@ -43,21 +45,42 @@ func (k *Keychain) Get(ref string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("keychain read failed for %s: %s", ref, strings.TrimSpace(errOut.String()))
 	}
-	return bytes.TrimRight(out.Bytes(), "\r\n"), nil
+	raw := bytes.TrimRight(out.Bytes(), "\r\n")
+	if decoded, ok := decodeStored(raw); ok {
+		return decoded, nil
+	}
+	return raw, nil
 }
 
-// Put stores the secret for ref, updating an existing item.
+// decodeStored undoes Put's hex encoding. A value that is not canonical
+// even-length lowercase hex predates the encoding (v1 stored setup-tokens
+// raw) and is returned unchanged.
+func decodeStored(v []byte) ([]byte, bool) {
+	if len(v) == 0 || len(v)%2 != 0 {
+		return nil, false
+	}
+	decoded, err := hex.DecodeString(string(v))
+	if err != nil || hex.EncodeToString(decoded) != string(v) {
+		return nil, false
+	}
+	return decoded, true
+}
+
+// Put stores the secret for ref, updating an existing item. The secret is
+// hex-encoded first: structured credentials (Codex OAuth JSON) contain
+// characters that cannot be embedded safely, and lowercase hex is inside
+// the safe set by construction.
 func (k *Keychain) Put(ref string, secret []byte) error {
 	if !safeToken.MatchString(ref) {
 		return fmt.Errorf("vault: unsafe credential ref")
 	}
-	if !safeToken.Match(secret) {
-		return fmt.Errorf("vault: credential contains characters outside the safe set")
+	if len(secret) == 0 {
+		return fmt.Errorf("vault: empty credential")
 	}
 	// `security -i` reads commands from stdin; the secret travels through
 	// the pipe and never appears in the process argument list.
 	script := fmt.Sprintf("add-generic-password -s %s -a \"%s\" -w \"%s\" -U\n",
-		keychainService, ref, secret)
+		keychainService, ref, hex.EncodeToString(secret))
 	cmd := exec.Command("security", "-i")
 	cmd.Stdin = strings.NewReader(script)
 	var out bytes.Buffer

@@ -22,6 +22,7 @@ import (
 
 	"accountant/internal/config"
 	"accountant/internal/provider"
+	"accountant/internal/refresh"
 	"accountant/internal/router"
 	"accountant/internal/vault"
 )
@@ -42,6 +43,7 @@ const (
 // Proxy serves the client-facing HTTP API.
 type Proxy struct {
 	cfgPath   string
+	stateFile string
 	router    *router.Router
 	vault     vault.Vault
 	providers map[string]provider.Provider
@@ -51,13 +53,18 @@ type Proxy struct {
 	httpClient   *http.Client
 	clientTimout int // seconds; rebuild transport when config changes
 
+	// refreshMu guards refreshes: in-flight credential refreshes,
+	// single-flight per vault ref.
+	refreshMu sync.Mutex
+	refreshes map[string]*refreshCall
+
 	// prefixDeadline overrides errorPrefixDeadline when > 0 (tests).
 	prefixDeadline time.Duration
 }
 
 // New creates a Proxy.
-func New(cfgPath string, r *router.Router, v vault.Vault, providers map[string]provider.Provider, log *slog.Logger) *Proxy {
-	return &Proxy{cfgPath: cfgPath, router: r, vault: v, providers: providers, log: log}
+func New(cfgPath, stateFile string, r *router.Router, v vault.Vault, providers map[string]provider.Provider, log *slog.Logger) *Proxy {
+	return &Proxy{cfgPath: cfgPath, stateFile: stateFile, router: r, vault: v, providers: providers, log: log, refreshes: map[string]*refreshCall{}}
 }
 
 // hopByHop are stripped in both directions; headers named by the Connection
@@ -96,23 +103,35 @@ func (p *Proxy) route(w http.ResponseWriter, r *http.Request) {
 	if rest, ok := strings.CutPrefix(path, "/anthropic/"); ok {
 		providerID = "anthropic"
 		path = "/" + rest
+	} else if rest, ok := strings.CutPrefix(path, "/codex/"); ok {
+		providerID = "codex"
+		path = "/" + rest
 	}
-	switch {
-	case path == "/v1/messages" && r.Method == http.MethodPost,
-		path == "/v1/messages/count_tokens" && r.Method == http.MethodPost,
-		path == "/v1/models" && r.Method == http.MethodGet:
-		if providerID == "" {
-			cfg, err := config.Load(p.cfgPath)
-			if err != nil {
-				writeAPIError(w, http.StatusInternalServerError, "api_error", "invalid configuration")
-				return
-			}
-			providerID = cfg.DefaultProvider
+	if providerID == "" {
+		// Resolve the default provider before validating the route: the
+		// accepted shape depends on it.
+		cfg, err := config.Load(p.cfgPath)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "api_error", "invalid configuration")
+			return
 		}
-		p.serve(w, r, providerID, path)
-	default:
-		writeAPIError(w, http.StatusNotFound, "not_found_error", "unknown path")
+		providerID = cfg.DefaultProvider
 	}
+	var served bool
+	switch providerID {
+	case "codex":
+		served = path == "/responses" && r.Method == http.MethodPost ||
+			path == "/models" && r.Method == http.MethodGet
+	default:
+		served = path == "/v1/messages" && r.Method == http.MethodPost ||
+			path == "/v1/messages/count_tokens" && r.Method == http.MethodPost ||
+			path == "/v1/models" && r.Method == http.MethodGet
+	}
+	if !served {
+		writeAPIError(w, http.StatusNotFound, "not_found_error", "unknown path")
+		return
+	}
+	p.serve(w, r, providerID, path)
 }
 
 func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, providerID, path string) {
@@ -195,6 +214,43 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, providerID, path s
 		if err != nil {
 			p.log.Error("credential unavailable", "account", acct.ID)
 			writeAPIError(w, http.StatusInternalServerError, "api_error", "credential unavailable")
+			return
+		}
+
+		// Providers with expiring credentials (Codex OAuth) refresh
+		// proactively, before any upstream call. A failed refresh advances
+		// to the next account without contacting upstream; a permanent
+		// failure also takes the account out of rotation.
+		cred, err = p.refreshIfNeeded(r.Context(), prov, acct, cred)
+		if err != nil {
+			if r.Context().Err() != nil {
+				// The caller went away (or its deadline hit) while waiting
+				// on the refresh: nothing can be served, and failing over
+				// would re-pin the session for an abandoned request.
+				return
+			}
+			var rerr *provider.RefreshError
+			permanent := errors.As(err, &rerr) && rerr.Permanent
+			if permanent {
+				if merr := p.router.MarkAuthBroken(acct.ID); merr != nil {
+					p.log.Error("marking auth-broken failed", "error", merr)
+				}
+			}
+			p.log.Warn("credential refresh failed", append(logAttrs, "account", acct.ID,
+				"permanent", permanent, "error", err.Error())...)
+			if !dec.Probe {
+				next, ok, ferr := p.router.Failover(providerID, sessionKey, acct.ID, tried)
+				if ferr != nil {
+					p.log.Error("failover failed", "error", ferr)
+				}
+				if ok {
+					p.log.Info("failing over", append(logAttrs, "from", acct.ID, "to", next.ID,
+						"verdict", "refresh_failed")...)
+					dec.Account = next
+					continue
+				}
+			}
+			writeAPIError(w, http.StatusBadGateway, "api_error", "account credential refresh failed")
 			return
 		}
 
@@ -308,6 +364,75 @@ func (p *Proxy) buildUpstreamRequest(in *http.Request, prov provider.Provider, p
 	stripHopByHop(up.Header)
 	up.Header.Del("Content-Length") // Go sets it from ContentLength
 	return up, nil
+}
+
+// refreshMargin is how long before credential expiry the proxy refreshes.
+const refreshMargin = 30 * time.Minute
+
+// refreshTimeout bounds one OAuth refresh round-trip.
+const refreshTimeout = 30 * time.Second
+
+// refreshCall is one in-flight single-flight refresh.
+type refreshCall struct {
+	done chan struct{}
+	cred []byte
+	err  error
+}
+
+// refreshIfNeeded returns a usable credential for the account, refreshing
+// single-flight when the provider reports an expiry within refreshMargin.
+// Providers without CredentialExpirer/Refresher get their credential back
+// unchanged. The refreshed credential is written to the vault before any
+// request uses it.
+func (p *Proxy) refreshIfNeeded(ctx context.Context, prov provider.Provider, acct config.Account, cred []byte) ([]byte, error) {
+	exp, ok := prov.(provider.CredentialExpirer)
+	if !ok {
+		return cred, nil
+	}
+	expiry, ok := exp.CredentialExpiry(cred)
+	if !ok || expiry.After(time.Now().Add(refreshMargin)) {
+		return cred, nil
+	}
+	if _, ok := prov.(provider.Refresher); !ok {
+		return cred, nil
+	}
+	p.log.Info("refreshing credential", "account", acct.ID, "expired", expiry.Format(time.RFC3339))
+	return p.refreshSingleFlight(ctx, prov, acct.CredentialRef)
+}
+
+// refreshSingleFlight coalesces concurrent refreshes of one vault ref
+// in-process. The leader runs refresh.IfNeeded, which re-reads the vault
+// under the shared per-credential lock: a worker (or CLI command) that
+// arrives after another refresh completed finds a fresh credential and
+// makes no second exchange. This matters because Codex refresh tokens
+// rotate — a duplicate exchange fails as refresh_token_reused.
+func (p *Proxy) refreshSingleFlight(ctx context.Context, prov provider.Provider, ref string) ([]byte, error) {
+	p.refreshMu.Lock()
+	if c, ok := p.refreshes[ref]; ok {
+		p.refreshMu.Unlock()
+		select {
+		case <-c.done:
+			return c.cred, c.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	c := &refreshCall{done: make(chan struct{})}
+	p.refreshes[ref] = c
+	p.refreshMu.Unlock()
+
+	// The refresh outlives a client disconnect: a cancelled client request
+	// must not waste a rotating refresh token round-trip.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+	cred, _, err := refresh.IfNeeded(rctx, p.vault, prov, p.stateFile, ref, refreshMargin)
+	cancel()
+
+	p.refreshMu.Lock()
+	delete(p.refreshes, ref)
+	p.refreshMu.Unlock()
+	c.cred, c.err = cred, err
+	close(c.done)
+	return c.cred, c.err
 }
 
 // upstreamClient returns the shared HTTP client, rebuilding the transport
