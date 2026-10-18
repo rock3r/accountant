@@ -15,7 +15,9 @@ import (
 	"golang.org/x/term"
 
 	"accountant/internal/config"
+	"accountant/internal/lockfile"
 	"accountant/internal/provider/codex"
+	"accountant/internal/refresh"
 	"accountant/internal/state"
 	"accountant/internal/vault"
 )
@@ -349,44 +351,67 @@ func accountRemove(id string, paths config.Paths, stdout, stderr io.Writer) int 
 	if acct == nil {
 		// Not in the config: an orphaned vault entry may remain from a
 		// failed `account add` (codex entries are preserved deliberately).
-		if err := vault.NewKeychain().Delete(id); err == nil {
-			fmt.Fprintf(stdout, "Removed orphaned credential %q from the Keychain (no such account in config).\n", id)
-			return 0
-		}
-		fmt.Fprintf(stderr, "error: no account %q\n", id)
-		return 1
+		return lockRemoval(paths, id, stderr, func() int {
+			if err := vault.NewKeychain().Delete(id); err == nil {
+				fmt.Fprintf(stdout, "Removed orphaned credential %q from the Keychain (no such account in config).\n", id)
+				return 0
+			}
+			fmt.Fprintf(stderr, "error: no account %q\n", id)
+			return 1
+		})
 	}
 	credRef := acct.CredentialRef
-	err = config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
-		if c.FindAccount(id) == nil {
-			return fmt.Errorf("no account %q", id)
-		}
-		kept := c.Accounts[:0]
-		for _, a := range c.Accounts {
-			if a.ID != id {
-				kept = append(kept, a)
+	// Take the per-credential refresh lock around the whole removal, so an
+	// in-flight daemon refresh cannot re-create the vault entry after we
+	// delete it (its Put would otherwise resurrect the credential).
+	return lockRemoval(paths, credRef, stderr, func() int {
+		err = config.LockedUpdate(paths.ConfigFile, paths.LockFile, func(c *config.Config) error {
+			if c.FindAccount(id) == nil {
+				return fmt.Errorf("no account %q", id)
 			}
+			kept := c.Accounts[:0]
+			for _, a := range c.Accounts {
+				if a.ID != id {
+					kept = append(kept, a)
+				}
+			}
+			c.Accounts = kept
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
 		}
-		c.Accounts = kept
+		if err := vault.NewKeychain().Delete(credRef); err != nil {
+			fmt.Fprintf(stderr, "warning: removing credential from Keychain: %v\n", err)
+		}
+		st := storeFor(paths)
+		if err := st.Locked(func(s *state.State) (bool, error) {
+			delete(s.Accounts, id)
+			s.DropPinsFor(id)
+			return true, nil
+		}); err != nil {
+			fmt.Fprintf(stderr, "warning: cleaning state: %v\n", err)
+		}
+		fmt.Fprintf(stdout, "Removed account %q.\n", id)
+		return 0
+	})
+}
+
+// lockRemoval runs fn while holding the per-credential refresh lock, so a
+// credential deletion cannot interleave with a refresh's
+// read-exchange-write cycle. A lock failure is reported but does not block
+// removal (the race window is narrow and the daemon fails safe).
+func lockRemoval(paths config.Paths, credRef string, stderr io.Writer, fn func() int) int {
+	rc := 0
+	err := lockfile.Locked(refresh.LockPath(paths.StateFile, credRef), func() error {
+		rc = fn()
 		return nil
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "error: %v\n", err)
-		return 1
+		fmt.Fprintf(stderr, "warning: refresh lock: %v\n", err)
 	}
-	if err := vault.NewKeychain().Delete(credRef); err != nil {
-		fmt.Fprintf(stderr, "warning: removing credential from Keychain: %v\n", err)
-	}
-	st := storeFor(paths)
-	if err := st.Locked(func(s *state.State) (bool, error) {
-		delete(s.Accounts, id)
-		s.DropPinsFor(id)
-		return true, nil
-	}); err != nil {
-		fmt.Fprintf(stderr, "warning: cleaning state: %v\n", err)
-	}
-	fmt.Fprintf(stdout, "Removed account %q.\n", id)
-	return 0
+	return rc
 }
 
 func accountTest(id string, paths config.Paths, stdout, stderr io.Writer) int {
