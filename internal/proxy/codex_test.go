@@ -173,6 +173,53 @@ func TestCodexResponsesMountedAndHeadersRewritten(t *testing.T) {
 	}
 }
 
+// TestCodexModelsForwarded covers the live model-discovery path: the CLI
+// calls GET {base}/models?client_version=... and the proxy must forward
+// path and query unchanged with the account credential swapped in.
+func TestCodexModelsForwarded(t *testing.T) {
+	accts := []config.Account{codexAcctCfg("cx-a", 10)}
+	cr := newCodexRig(t, accts, nil, nil)
+	catalog := `{"models":[{"slug":"gpt-test","supported_in_api":true,"visibility":"list"}]}`
+	cr.rig.up.set("tok-cx-a", ok200(catalog, map[string]string{
+		"x-codex-primary-used-percent":   "59",
+		"x-codex-primary-window-minutes": "10080",
+		"x-codex-primary-reset-at":       itoa(testStart.Add(72 * time.Hour).Unix()),
+	}))
+
+	resp := cr.rig.doRequest(t, http.MethodGet, "/codex/models?client_version=0.163.0", nil, map[string]string{})
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("status %d body %s", resp.StatusCode, body)
+	}
+	if string(body) != catalog {
+		t.Errorf("catalog not byte-identical: %s", body)
+	}
+	reqs := cr.rig.up.requests()
+	if len(reqs) != 1 {
+		t.Fatalf("upstream got %d requests", len(reqs))
+	}
+	if reqs[0].Path != "/models" || reqs[0].Query != "client_version=0.163.0" {
+		t.Errorf("upstream got %s?%s", reqs[0].Path, reqs[0].Query)
+	}
+	if got := reqs[0].Headers.Get("ChatGPT-Account-ID"); got != "acct-cx-a" {
+		t.Errorf("ChatGPT-Account-ID %q", got)
+	}
+
+	// Weekly window in the primary position lands in the 7d slot.
+	st := cr.rig.state(t)
+	as := st.Accounts["cx-a"]
+	if as == nil || !as.SevenDay.HasSample || as.SevenDay.Utilization != 0.59 {
+		t.Errorf("weekly sample not recorded: %+v", as)
+	}
+	if as != nil && as.FiveHour.HasSample {
+		t.Errorf("5h slot should be empty: %+v", as.FiveHour)
+	}
+}
+
 func TestCodexUnknownPath404(t *testing.T) {
 	cr := newCodexRig(t, []config.Account{codexAcctCfg("cx-a", 10)}, nil, nil)
 	status, _, _ := cr.post(t, "/codex/chat", "s", []byte(`{}`))
