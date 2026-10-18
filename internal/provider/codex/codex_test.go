@@ -136,6 +136,32 @@ func TestRewriteRequest(t *testing.T) {
 	if got := req.Header.Get("originator"); got != "codex_cli_rs" {
 		t.Errorf("unrelated header dropped: %q", got)
 	}
+	// The client's own client_version is preserved.
+	req2, err := http.NewRequest(http.MethodGet, p.UpstreamBaseURL()+"/models?client_version=9.9.9", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.RewriteRequest(req2, cred); err != nil {
+		t.Fatal(err)
+	}
+	if got := req2.URL.Query().Get("client_version"); got != "9.9.9" {
+		t.Errorf("client_version overwritten: %q", got)
+	}
+
+	// Clients that are not the Codex CLI get its defaults filled in.
+	req3, err := http.NewRequest(http.MethodGet, p.UpstreamBaseURL()+"/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.RewriteRequest(req3, cred); err != nil {
+		t.Fatal(err)
+	}
+	if got := req3.Header.Get("originator"); got != "codex_cli_rs" {
+		t.Errorf("originator not injected: %q", got)
+	}
+	if got := req3.URL.Query().Get("client_version"); got != defaultClientVersion {
+		t.Errorf("client_version not injected: %q", got)
+	}
 
 	if err := p.RewriteRequest(req, []byte("junk")); err == nil {
 		t.Error("expected error for unparseable credential")

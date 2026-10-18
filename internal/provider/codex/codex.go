@@ -14,9 +14,9 @@ import (
 	"accountant/internal/provider"
 )
 
-// validateClientVersion is sent on the /models validation call; the
-// backend rejects the request without a client_version query (S4).
-const validateClientVersion = "0.163.0"
+// defaultClientVersion is sent as the client_version query when the client
+// did not send one; the backend rejects /models without it (S4).
+const defaultClientVersion = "0.163.0"
 
 // Provider implements provider.Provider (plus provider.Refresher and
 // provider.CredentialExpirer) for ChatGPT Codex subscriptions.
@@ -57,7 +57,9 @@ func (p *Provider) UpstreamBaseURL() string { return p.baseURL }
 // RewriteRequest swaps the inbound credential headers for the account's:
 // Authorization: Bearer <access token> plus ChatGPT-Account-ID (S4). The
 // inbound Authorization, x-api-key, and ChatGPT-Account-ID headers are
-// deleted without exception; every other header passes through.
+// deleted without exception; every other header passes through. Clients
+// that are not the Codex CLI get the CLI's defaults filled in: the
+// originator header and the client_version query (required on /models).
 func (p *Provider) RewriteRequest(req *http.Request, credBytes []byte) error {
 	cred, err := ParseCredential(credBytes)
 	if err != nil {
@@ -68,6 +70,14 @@ func (p *Provider) RewriteRequest(req *http.Request, credBytes []byte) error {
 	req.Header.Del("ChatGPT-Account-ID")
 	req.Header.Set("Authorization", "Bearer "+cred.AccessToken)
 	req.Header.Set("ChatGPT-Account-ID", cred.AccountID)
+	if req.Header.Get("originator") == "" {
+		req.Header.Set("originator", "codex_cli_rs")
+	}
+	if req.URL.Query().Get("client_version") == "" {
+		q := req.URL.Query()
+		q.Set("client_version", defaultClientVersion)
+		req.URL.RawQuery = q.Encode()
+	}
 	return nil
 }
 
@@ -220,7 +230,7 @@ func (p *Provider) Validate(ctx context.Context, credBytes []byte) error {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		p.baseURL+"/models?client_version="+validateClientVersion, nil)
+		p.baseURL+"/models?client_version="+defaultClientVersion, nil)
 	if err != nil {
 		return err
 	}
