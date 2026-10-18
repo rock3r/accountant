@@ -120,12 +120,30 @@ leaves Pi's built-in Anthropic provider untouched as a fallback. The
 `!security …` form reads the key from the login Keychain at request time;
 a literal key or `$ENV_VAR` work too.
 
-For a **live model catalog** (every model the subscription can use, straight
-from the proxied `GET /v1/models`, instead of the static list above), copy
-`integrations/pi/accountant.ts` to `~/.pi/agent/extensions/` and drop the
-static `accountant` block from `models.json`. The extension fetches the
-catalog at startup, caches it under `~/.pi/agent/accountant-models-cache.json`
-for when the daemon is down, and refreshes it when the model picker reloads.
+For a **live model catalog** (every model the subscriptions can use,
+straight from the proxied `GET /v1/models` and `GET /codex/models`, instead
+of the static list above), copy `integrations/pi/accountant.ts` to
+`~/.pi/agent/extensions/` and drop the static `accountant` block from
+`models.json`. The extension registers two providers — `accountant` (Claude
+models, Anthropic Messages API) and `accountant-codex` (Codex models, OpenAI
+Responses API) — fetches both catalogs at startup (a daemon that only
+serves one side keeps the other side's cached data), caches them under
+`~/.pi/agent/accountant-models-cache.json` for when the daemon is down, and
+refreshes them when the model picker reloads. Codex models carry their live
+context window and a thinking-level map clamped to the efforts each model
+advertises; `compat` flags keep Pi from sending request fields the ChatGPT
+backend rejects (`max_output_tokens`, prompt-cache retention).
+
+The extension's last resort is an embedded static catalog, refreshed at
+release time against a running daemon:
+
+```sh
+node integrations/update-catalog.mjs            # re-embed + write integrations/catalog.json
+node integrations/update-catalog.mjs --check    # fail if the committed catalog is stale
+```
+
+`integrations/catalog.json` holds the same raw upstream payloads for client
+integrations that cannot do live discovery (Amp, others).
 
 ## Connect Codex (ChatGPT subscriptions)
 
