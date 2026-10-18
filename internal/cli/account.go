@@ -400,16 +400,23 @@ func accountRemove(id string, paths config.Paths, stdout, stderr io.Writer) int 
 
 // lockRemoval runs fn while holding the per-credential refresh lock, so a
 // credential deletion cannot interleave with a refresh's
-// read-exchange-write cycle. A lock failure is reported but does not block
-// removal (the race window is narrow and the daemon fails safe).
+// read-exchange-write cycle. If the lock cannot be taken (e.g. the state
+// directory is unwritable), fn still runs without it — removal must not
+// silently report success while doing nothing; the race window is narrow
+// and the daemon fails safe.
 func lockRemoval(paths config.Paths, credRef string, stderr io.Writer, fn func() int) int {
 	rc := 0
+	run := false
 	err := lockfile.Locked(refresh.LockPath(paths.StateFile, credRef), func() error {
+		run = true
 		rc = fn()
 		return nil
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "warning: refresh lock: %v\n", err)
+		fmt.Fprintf(stderr, "warning: refresh lock: %v (proceeding without it)\n", err)
+	}
+	if !run {
+		rc = fn()
 	}
 	return rc
 }
