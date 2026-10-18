@@ -54,9 +54,12 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 	provider := ""
 	label := ""
 	from := ""
+	force := false
 	priority := 10
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--force":
+			force = true
 		case "--label":
 			if i+1 >= len(args) {
 				fmt.Fprintln(stderr, "--label needs a value")
@@ -123,7 +126,7 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 		}
 	case "codex":
 		var ok bool
-		cred, ok = accountAddCodex(from, id, stdout, stderr)
+		cred, ok = accountAddCodex(from, id, force, stdout, stderr)
 		if !ok {
 			return 1
 		}
@@ -207,10 +210,11 @@ func generateAccountID(paths config.Paths, label string, stderr io.Writer) strin
 // it into the config. Codex entries are always preserved instead: the vault
 // holds the freshest rotated credential by construction (stored before
 // validation, rotated under the refresh lock), while the source auth.json
-// may already be stale. A re-run of the same command resumes from it.
+// may already be stale. A re-run of the same command resumes from it;
+// --force re-imports from the file instead.
 func cleanupFailedAdd(id, provider string, stderr io.Writer) {
 	if provider == "codex" {
-		fmt.Fprintf(stderr, "note: the OAuth tokens are preserved in the Keychain under ref %q; re-running the same command resumes from them.\n", id)
+		fmt.Fprintf(stderr, "note: the OAuth tokens are preserved in the Keychain under ref %q; re-running the same command resumes from them (or re-import from a corrected file with --force).\n", id)
 		return
 	}
 	_ = vault.NewKeychain().Delete(id)
@@ -249,12 +253,15 @@ Token: `, label, label)
 // (auth.json). ok is false on any read/parse error. A parseable credential
 // already in the vault under id comes from a previous attempt that rotated
 // the tokens and then failed; it takes precedence over the (now stale)
-// source file.
-func accountAddCodex(from, id string, stdout, stderr io.Writer) (cred []byte, ok bool) {
-	if existing, err := vault.NewKeychain().Get(id); err == nil {
-		if _, err := codex.ParseCredential(existing); err == nil {
-			fmt.Fprintf(stdout, "Reusing the rotated OAuth tokens stored under ref %q from the previous attempt.\n", id)
-			return existing, true
+// source file, unless --force is given to re-import from the file (the
+// escape hatch when the preserved entry itself is bad).
+func accountAddCodex(from, id string, force bool, stdout, stderr io.Writer) (cred []byte, ok bool) {
+	if !force {
+		if existing, err := vault.NewKeychain().Get(id); err == nil {
+			if _, err := codex.ParseCredential(existing); err == nil {
+				fmt.Fprintf(stdout, "Reusing the rotated OAuth tokens stored under ref %q from the previous attempt.\n", id)
+				return existing, true
+			}
 		}
 	}
 	if from == "" {
@@ -340,6 +347,12 @@ func accountRemove(id string, paths config.Paths, stdout, stderr io.Writer) int 
 	}
 	acct := cfg.FindAccount(id)
 	if acct == nil {
+		// Not in the config: an orphaned vault entry may remain from a
+		// failed `account add` (codex entries are preserved deliberately).
+		if err := vault.NewKeychain().Delete(id); err == nil {
+			fmt.Fprintf(stdout, "Removed orphaned credential %q from the Keychain (no such account in config).\n", id)
+			return 0
+		}
 		fmt.Fprintf(stderr, "error: no account %q\n", id)
 		return 1
 	}

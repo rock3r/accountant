@@ -6,6 +6,7 @@ package refresh
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"time"
 
@@ -47,8 +48,18 @@ func IfNeeded(ctx context.Context, v vault.Vault, prov provider.Provider, stateF
 		if err != nil {
 			return err
 		}
-		if err := v.Put(ref, newCred); err != nil {
-			return err
+		// The refresh token has now rotated upstream: newCred is the only
+		// valid copy, so persistence must not fail silently. Retry a
+		// transient vault error before giving up.
+		var perr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if perr = v.Put(ref, newCred); perr == nil {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if perr != nil {
+			return fmt.Errorf("rotated credential could not be saved (%v); if this account turns auth-broken, re-import it from a fresh `codex login`", perr)
 		}
 		cred = newCred
 		refreshed = true

@@ -68,7 +68,7 @@ func usage(w io.Writer) {
 Usage:
   accountant serve                              run the proxy daemon
   accountant account add claude --label NAME [--priority N]
-  accountant account add codex --label NAME [--priority N] [--from PATH]
+  accountant account add codex --label NAME [--priority N] [--from PATH] [--force]
   accountant account list
   accountant account remove ID
   accountant account test ID
