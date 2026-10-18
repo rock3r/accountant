@@ -82,7 +82,7 @@ func probeSecretService() error {
 			return fmt.Errorf("reading default collection state: %w", err)
 		}
 		if locked {
-			return fmt.Errorf("Secret Service collection is locked — log in once on the console (or enable auto-login); headless boxes should set vault_backend = %q", "file")
+			return fmt.Errorf("the Secret Service collection is locked — log in once on the console (or enable auto-login); headless boxes should set vault_backend = %q", "file")
 		}
 		return nil
 	})
@@ -114,6 +114,8 @@ func guarded(d time.Duration, f func() error) error {
 	}
 }
 
+// Get returns the stored secret for ref. The secret never passes through
+// a command line or a file accountant manages.
 func (s *SecretService) Get(ref string) ([]byte, error) {
 	if err := validateRef(ref); err != nil {
 		return nil, err
@@ -133,6 +135,7 @@ func (s *SecretService) Get(ref string) ([]byte, error) {
 	return []byte(secret), nil
 }
 
+// Put stores the secret under ref in the unlocked default collection.
 func (s *SecretService) Put(ref string, secret []byte) error {
 	if err := validateRef(ref); err != nil {
 		return err
@@ -150,6 +153,7 @@ func (s *SecretService) Put(ref string, secret []byte) error {
 	})
 }
 
+// Delete removes the stored secret for ref.
 func (s *SecretService) Delete(ref string) error {
 	if err := validateRef(ref); err != nil {
 		return err
