@@ -150,6 +150,9 @@ Differences from Claude accounts:
   windows are mapped by their actual length, not their position.
 - Only model traffic goes through the proxy. Login, connectors, and other
   ChatGPT app features keep talking to OpenAI directly from the CLI.
+- Model discovery is live: the CLI fetches `GET /codex/models` through the
+  proxy (5-minute `models_cache.json` TTL), so the picker reflects the plan
+  of whichever account currently serves the request. Nothing is hardcoded.
 - A permanently rejected refresh (expired/revoked/reused token) marks the
   account auth-broken; re-import with `accountant account add codex` and
   clear with `accountant account test ID`.
