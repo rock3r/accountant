@@ -131,6 +131,10 @@ func TestCodexResponsesMountedAndHeadersRewritten(t *testing.T) {
 	cr.rig.up.set("tok-cx-a", ok200(`{"id":"resp_1"}`, map[string]string{
 		"x-codex-primary-used-percent":   "12",
 		"x-codex-primary-window-minutes": "300",
+		"x-codex-plan-type":              "pro",
+		"x-codex-credits-balance":        "58337.5",
+		"x-codex-credits-has-credits":    "True",
+		"x-codex-credits-unlimited":      "False",
 	}))
 
 	body := []byte(`{"model":"gpt-test","stream":true}`)
@@ -170,6 +174,10 @@ func TestCodexResponsesMountedAndHeadersRewritten(t *testing.T) {
 	}
 	if as.FiveHour.Utilization != 0.12 {
 		t.Errorf("utilization %v, want 0.12", as.FiveHour.Utilization)
+	}
+	// Credits reading recorded verbatim (display-only data).
+	if as.Credits == nil || !as.Credits.HasBalance || as.Credits.Balance != 58337.5 || as.Credits.Plan != "pro" {
+		t.Errorf("credits not recorded: %+v", as.Credits)
 	}
 }
 

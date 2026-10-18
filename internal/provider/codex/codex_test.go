@@ -206,6 +206,8 @@ func TestQuotaFromResponseWeeklyInPrimary(t *testing.T) {
 		"x-codex-secondary-used-percent":   "0",
 		"x-codex-secondary-window-minutes": "0",
 		"x-codex-secondary-reset-at":       "",
+		"x-codex-credits-balance":          "58337.538491",
+		"x-codex-credits-has-credits":      "True",
 	}))
 	if !ok {
 		t.Fatal("expected snapshot")
@@ -218,6 +220,10 @@ func TestQuotaFromResponseWeeklyInPrimary(t *testing.T) {
 	}
 	if snap.FiveHour.HasUtilization || snap.FiveHour.HasReset {
 		t.Errorf("inactive window leaked: got %+v", snap.FiveHour)
+	}
+	// Live Pro sample: real balance, plan pro.
+	if snap.Credits == nil || !snap.Credits.HasBalance || snap.Credits.Balance != 58337.538491 || snap.Credits.Plan != "pro" || snap.Credits.Unlimited {
+		t.Errorf("credits: got %+v", snap.Credits)
 	}
 }
 
@@ -255,6 +261,34 @@ func TestQuotaFromResponseFallbackWithoutWindowMinutes(t *testing.T) {
 	}
 	if snap.FiveHour.Utilization != 0.25 || snap.SevenDay.Utilization != 0.75 {
 		t.Errorf("fallback mapping: got %+v", snap)
+	}
+}
+
+func TestQuotaFromResponseCreditsOnly(t *testing.T) {
+	// Live Plus sample: no usable windows yet, but plan type present; a
+	// credits-only response still yields a snapshot.
+	p := New("")
+	//nolint:bodyclose // synthetic response struct, not an HTTP call
+	snap, ok := p.QuotaFromResponse(headerResp(map[string]string{
+		"x-codex-plan-type":           "plus",
+		"x-codex-credits-balance":     "0",
+		"x-codex-credits-has-credits": "False",
+		"x-codex-credits-unlimited":   "False",
+	}))
+	if !ok {
+		t.Fatal("expected snapshot from credits/plan headers alone")
+	}
+	if snap.Credits == nil || snap.Credits.HasBalance || snap.Credits.Unlimited || snap.Credits.Plan != "plus" {
+		t.Errorf("credits: got %+v", snap.Credits)
+	}
+}
+
+func TestQuotaFromResponseNoHeaders(t *testing.T) {
+	// Live /models responses carry no quota headers at all.
+	p := New("")
+	//nolint:bodyclose // synthetic response struct, not an HTTP call
+	if _, ok := p.QuotaFromResponse(headerResp(nil)); ok {
+		t.Error("expected no snapshot")
 	}
 }
 

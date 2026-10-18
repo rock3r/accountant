@@ -328,6 +328,15 @@ func (r *Router) Record(accountID string, resp *http.Response, snap provider.Quo
 			if snap.Status != "" {
 				as.Status = snap.Status
 			}
+			if snap.Credits != nil {
+				as.Credits = &state.Credit{
+					Balance:    snap.Credits.Balance,
+					HasBalance: snap.Credits.HasBalance,
+					Unlimited:  snap.Credits.Unlimited,
+					Plan:       snap.Credits.Plan,
+					SampledAt:  now,
+				}
+			}
 			as.UpdatedAt = now
 		}
 		switch verdict {

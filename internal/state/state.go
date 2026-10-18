@@ -35,6 +35,18 @@ type AccountState struct {
 	CoolingUntil time.Time `json:"cooling_until,omitempty"` // zero: not cooling
 	AuthBroken   bool      `json:"auth_broken,omitempty"`
 	UpdatedAt    time.Time `json:"updated_at,omitempty"`
+	// Credits is the last prepaid credit balance reading, if the provider
+	// reports one. Display-only.
+	Credits *Credit `json:"credits,omitempty"`
+}
+
+// Credit is the last prepaid credit balance reading (display only).
+type Credit struct {
+	Balance    float64   `json:"balance"`
+	HasBalance bool      `json:"has_balance,omitempty"`
+	Unlimited  bool      `json:"unlimited,omitempty"`
+	Plan       string    `json:"plan,omitempty"`
+	SampledAt  time.Time `json:"sampled_at"`
 }
 
 // Pin binds a session to an account.

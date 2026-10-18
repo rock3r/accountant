@@ -39,6 +39,17 @@ func cmdStatus(paths config.Paths, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%s (%s, priority %d%s)\n", a.ID, a.Label, a.Priority, enabledSuffix(a))
 		printWindow(stdout, "5h", windowOf(as, true), now, cfg.UtilizationScale)
 		printWindow(stdout, "7d", windowOf(as, false), now, cfg.UtilizationScale)
+		if as != nil && as.Credits != nil {
+			switch {
+			case as.Credits.Unlimited:
+				fmt.Fprintln(stdout, "  credits:   unlimited")
+			case as.Credits.HasBalance:
+				fmt.Fprintf(stdout, "  credits:   %.1f\n", as.Credits.Balance)
+			}
+			if as.Credits.Plan != "" {
+				fmt.Fprintf(stdout, "  plan:      %s\n", as.Credits.Plan)
+			}
+		}
 		switch {
 		case as == nil:
 			fmt.Fprintln(stdout, "  state:     no traffic recorded yet")

@@ -117,7 +117,8 @@ func (p *Provider) QuotaFromResponse(resp *http.Response) (provider.QuotaSnapsho
 
 	primary, pOK := parseCodexWindow(h, prefix+"-primary")
 	secondary, sOK := parseCodexWindow(h, prefix+"-secondary")
-	if !pOK && !sOK {
+	credits := parseCodexCredits(h)
+	if !pOK && !sOK && credits == nil {
 		return provider.QuotaSnapshot{}, false
 	}
 
@@ -143,7 +144,31 @@ func (p *Provider) QuotaFromResponse(resp *http.Response) (provider.QuotaSnapsho
 		// slot the primary window did not take.
 		place(secondary, windowMinutes(h, prefix+"-secondary-window-minutes"), !fiveHourTaken)
 	}
+	s.Credits = credits
 	return s, true
+}
+
+// parseCodexCredits reads the x-codex-credits-* family and plan type.
+// Display-only data. A balance only counts when has-credits is true (or
+// absent): a non-credit plan reports balance 0, which must not render as
+// "0 credits". The plan label is kept either way.
+func parseCodexCredits(h http.Header) *provider.CreditSample {
+	cs := &provider.CreditSample{Plan: strings.ToLower(strings.TrimSpace(h.Get("x-codex-plan-type")))}
+	hasCredits := true
+	if v := strings.TrimSpace(h.Get("x-codex-credits-has-credits")); v != "" {
+		hasCredits = strings.EqualFold(v, "true")
+	}
+	if b := strings.TrimSpace(h.Get("x-codex-credits-balance")); b != "" && hasCredits {
+		if f, err := strconv.ParseFloat(b, 64); err == nil {
+			cs.Balance = f
+			cs.HasBalance = true
+		}
+	}
+	cs.Unlimited = strings.EqualFold(strings.TrimSpace(h.Get("x-codex-credits-unlimited")), "true")
+	if !cs.HasBalance && !cs.Unlimited && cs.Plan == "" {
+		return nil
+	}
+	return cs
 }
 
 // parseCodexWindow reads one window's headers. A window whose values are

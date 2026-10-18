@@ -27,6 +27,19 @@ type QuotaSnapshot struct {
 	FiveHour WindowSample
 	SevenDay WindowSample
 	Status   string // unified status
+	// Credits is the prepaid credit balance reading for plans metered in
+	// credits instead of (or besides) rolling windows. Nil when the
+	// provider reports none. Display-only: never affects eligibility.
+	Credits *CreditSample
+}
+
+// CreditSample is a provider-neutral prepaid credit balance reading
+// (e.g. the Codex x-codex-credits-* family).
+type CreditSample struct {
+	Balance    float64 // remaining balance in provider units
+	HasBalance bool
+	Unlimited  bool   // plan is not credit-metered
+	Plan       string // plan label, e.g. "pro"; optional
 }
 
 // Verdict buckets a finished upstream response.

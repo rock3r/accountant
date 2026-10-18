@@ -25,28 +25,50 @@ the Codex source tree at `~/src/codex` (eb15245d82), the owner's
 4. **Validation call.** `GET /codex/models?client_version=0.163.0` with the
    account headers: 200 with the real token, 401 with a bogus one
    (verified live). No quota cost.
-5. **Quota headers.** Every /responses answer carries the `x-codex-*`
-   family; the live sample:
+5. **Quota headers.** Every `/responses` answer carries the `x-codex-*`
+   family (live-verified 2026-10-18: `GET /models` carries **no** quota
+   headers, so validation cannot refresh quota state). Live samples, one
+   per plan (owner accounts):
 
    ```
+   # Pro (credits plan) — no 5h window at all
    x-codex-active-limit: premium
-   x-codex-primary-used-percent: 59
+   x-codex-plan-type: pro
+   x-codex-primary-used-percent: 17
    x-codex-primary-window-minutes: 10080
-   x-codex-primary-reset-at: 1792649662
-   x-codex-secondary-used-percent: 0
-   x-codex-secondary-window-minutes: 0
-   x-codex-secondary-reset-at:            (empty)
+   x-codex-primary-reset-at: 1792874442
+   x-codex-secondary-*: all zeros/empty (inactive)
+   x-codex-credits-balance: 58337.5384910000
    x-codex-credits-has-credits: True
+   x-codex-credits-unlimited: False
+
+   # Plus — primary is the 5h window here
+   x-codex-plan-type: plus
+   x-codex-primary-used-percent: 0
+   x-codex-primary-window-minutes: 300
+   x-codex-secondary-used-percent: 0
+   x-codex-secondary-window-minutes: 10080
+   x-codex-credits-balance: 0
+   x-codex-credits-has-credits: False
    ```
 
    - Values are **percent** (0–100), not fractions; the provider divides by
      100 before handing the router a snapshot.
-   - **Window position is not the window length**: on this account the
-     *primary* window is the weekly one (10080 min). The provider maps
+   - **Window position is not the window length**: on Pro the *primary*
+     window is the weekly one (10080 min); on Plus the *primary* is the
+     5h window (300 min) with weekly in *secondary*. The provider maps
      windows to the router's 5h/7d slots by `*-window-minutes`
      (≤ 720 min → 5h slot), falling back to primary→5h / secondary→7d.
+     Pro plans report no 5h window at all (owner-verified); their quota
+     story is the weekly percent plus credits.
    - A window that is all zeros/empty is **inactive** and must not produce
      a sample (else a phantom 0% window would reset real state).
+   - **Credits family** (`x-codex-credits-balance`, `-has-credits`,
+     `-unlimited`, plus `x-codex-plan-type`) is display-only data;
+     accountant records it in state and shows it in `accountant status`.
+     A balance only counts when `has-credits` is true (or absent): a
+     non-credit plan reports balance 0, which must not render as
+     "0 credits".
    - `x-codex-active-limit` names the active limit family; per-family
      headers `x-<limit>-primary-*` can supplement the default family
      (codex-rs `codex-api/src/rate_limits.rs`, `parse_all_rate_limits`).
