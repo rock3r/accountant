@@ -453,7 +453,9 @@ func TestCodexRefreshTransientFailureFailsOverWithoutMarking(t *testing.T) {
 
 func TestCodexNoRefreshWhenTokenFresh(t *testing.T) {
 	accts := []config.Account{codexAcctCfg("cx-a", 10)}
-	fresh := codexJWTCred(t, "fresh", testStart.Add(240*time.Hour), "acct-cx-a")
+	// Expiry is relative to the wall clock: production freshness checks
+	// compare against time.Now(), not the rig's frozen clock.
+	fresh := codexJWTCred(t, "fresh", time.Now().Add(240*time.Hour), "acct-cx-a")
 	cr := newCodexRig(t, accts, map[string][]byte{"cx-a": fresh}, func(string) (int, string) {
 		return 200, `{}`
 	})
