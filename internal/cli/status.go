@@ -93,7 +93,7 @@ func printWindow(stdout io.Writer, name string, w *state.Window, now time.Time, 
 		fmt.Fprintf(stdout, "  %-10s unknown\n", name+":")
 		return
 	}
-	util := router.NormalizeUtilization(w.Utilization, scale)
+	util := router.WindowUtilization(*w, scale)
 	line := fmt.Sprintf("  %-10s %.1f%% used", name+":", util*100)
 	if !w.ResetAt.IsZero() {
 		line += fmt.Sprintf(", resets %s", w.ResetAt.Local().Format("2006-01-02 15:04"))

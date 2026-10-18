@@ -15,6 +15,10 @@ type WindowSample struct {
 	ResetAt        time.Time
 	HasReset       bool
 	Status         string // e.g. "allowed", "rejected"
+	// Normalized marks Utilization as already a fraction (provider
+	// converted its native scale); the router must not apply the
+	// configured utilization_scale to it again.
+	Normalized bool
 }
 
 // QuotaSnapshot is the per-response quota read. Response headers are the

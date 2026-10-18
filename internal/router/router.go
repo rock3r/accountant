@@ -83,6 +83,30 @@ func NormalizeUtilization(v float64, scale string) float64 {
 	}
 }
 
+// sampleUtilization returns a provider sample's utilization as a fraction.
+// Samples the provider already normalized skip the configured scale.
+func sampleUtilization(w provider.WindowSample, scale string) float64 {
+	if w.Normalized {
+		return w.Utilization
+	}
+	return NormalizeUtilization(w.Utilization, scale)
+}
+
+// WindowUtilization returns a stored window's utilization as a fraction.
+// Samples the provider already normalized skip the configured scale.
+// Exported for status reporting.
+func WindowUtilization(w state.Window, scale string) float64 {
+	if w.Normalized {
+		return w.Utilization
+	}
+	return NormalizeUtilization(w.Utilization, scale)
+}
+
+// windowUtilization is the internal alias used by eligibility checks.
+func windowUtilization(w state.Window, scale string) float64 {
+	return WindowUtilization(w, scale)
+}
+
 // windowBlocks reports whether a recorded window sample currently makes an
 // account ineligible: a real sample, utilization at or above 1.0, and a
 // reset time still in the future. A sample whose reset has passed counts as
@@ -91,7 +115,7 @@ func windowBlocks(w state.Window, now time.Time, scale string) bool {
 	if !w.HasSample || w.ResetAt.IsZero() || !w.ResetAt.After(now) {
 		return false
 	}
-	return NormalizeUtilization(w.Utilization, scale) >= 1.0
+	return windowUtilization(w, scale) >= 1.0
 }
 
 // eligible implements the exact rule: not cooling, not auth-broken, and
@@ -383,6 +407,7 @@ func (r *Router) MarkAuthBroken(accountID string) error {
 func applyWindow(dst *state.Window, src provider.WindowSample, now time.Time) {
 	if src.HasUtilization {
 		dst.Utilization = src.Utilization
+		dst.Normalized = src.Normalized
 	}
 	if src.HasReset {
 		dst.ResetAt = src.ResetAt
@@ -405,7 +430,7 @@ func cooldownFrom(snap provider.QuotaSnapshot, resp *http.Response, now time.Tim
 	var until time.Time
 	latest := time.Time{}
 	for _, w := range []provider.WindowSample{snap.FiveHour, snap.SevenDay} {
-		if w.HasUtilization && NormalizeUtilization(w.Utilization, scale) >= 1.0 && w.HasReset {
+		if w.HasUtilization && sampleUtilization(w, scale) >= 1.0 && w.HasReset {
 			if w.ResetAt.After(latest) {
 				latest = w.ResetAt
 			}

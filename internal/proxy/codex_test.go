@@ -220,6 +220,48 @@ func TestCodexModelsForwarded(t *testing.T) {
 	}
 }
 
+// TestCodexPercentScaleConfigNoDoubleNormalize: with utilization_scale =
+// "percent" configured, a Codex window that reads 100% must still block the
+// account. Codex samples are normalized by the provider, so the router must
+// not apply the configured scale to them again.
+func TestCodexPercentScaleConfigNoDoubleNormalize(t *testing.T) {
+	accts := []config.Account{codexAcctCfg("cx-a", 10), codexAcctCfg("cx-b", 20)}
+	cr := newCodexRig(t, accts, nil, nil)
+	cfg, err := config.Load(cr.rig.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.UtilizationScale = "percent"
+	if err := config.Save(cr.rig.cfgPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	resetAt := testStart.Add(3 * time.Hour).Unix()
+	cr.rig.up.set("tok-cx-a", ok200(`{"id":"ra"}`, map[string]string{
+		"x-codex-primary-used-percent":   "100",
+		"x-codex-primary-window-minutes": "300",
+		"x-codex-primary-reset-at":       itoa(resetAt),
+	}))
+	cr.rig.up.set("tok-cx-b", ok200(`{"id":"rb"}`, nil))
+
+	// A 2xx whose headers read 100% marks the account ineligible for later
+	// requests (without disturbing this one).
+	status, _, _ := cr.post(t, "/codex/responses", "sess-1", []byte(`{}`))
+	if status != 200 {
+		t.Fatalf("status %d", status)
+	}
+	st := cr.rig.state(t)
+	if router.Eligible(st.Accounts["cx-a"], testStart, "percent") {
+		t.Error("cx-a at 100% must be ineligible under utilization_scale=percent")
+	}
+
+	// The session's next request re-selects and lands on cx-b.
+	status, got, _ := cr.post(t, "/codex/responses", "sess-1", []byte(`{}`))
+	if status != 200 || string(got) != `{"id":"rb"}` {
+		t.Errorf("expected failover to cx-b, got %d %s", status, got)
+	}
+}
+
 func TestCodexUnknownPath404(t *testing.T) {
 	cr := newCodexRig(t, []config.Account{codexAcctCfg("cx-a", 10)}, nil, nil)
 	status, _, _ := cr.post(t, "/codex/chat", "s", []byte(`{}`))

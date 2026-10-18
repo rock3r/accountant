@@ -21,6 +21,10 @@ type Window struct {
 	Status      string    `json:"status,omitempty"`     // per-window status header, display only
 	SampledAt   time.Time `json:"sampled_at,omitempty"` // local receipt time of the sample
 	HasSample   bool      `json:"has_sample,omitempty"` // whether a sample was ever recorded
+	// Normalized marks Utilization as already a fraction (the provider
+	// converted its native scale); readers must not apply the configured
+	// utilization_scale to it again.
+	Normalized bool `json:"normalized,omitempty"`
 }
 
 // AccountState is the mutable per-account quota and health state.

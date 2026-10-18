@@ -145,6 +145,7 @@ func parseCodexWindow(h http.Header, prefix string) (provider.WindowSample, bool
 		if f, err := strconv.ParseFloat(util, 64); err == nil {
 			w.Utilization = f / 100 // percent upstream; fraction internally
 			w.HasUtilization = true
+			w.Normalized = true
 		}
 	}
 	if v := strings.TrimSpace(h.Get(prefix + "-reset-at")); v != "" {
