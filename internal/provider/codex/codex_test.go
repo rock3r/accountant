@@ -364,6 +364,19 @@ func TestRefreshRotation(t *testing.T) {
 	}
 }
 
+// TestRefreshRejectsMissingAccessToken: a 2xx token response without an
+// access token must not be persisted as a successful refresh.
+func TestRefreshRejectsMissingAccessToken(t *testing.T) {
+	script := &refreshScript{t: t, handler: func(string) (int, string) {
+		return 200, `{"refresh_token":"rt-new"}`
+	}}
+	p := NewForTest("", script.server().URL)
+	cred := credJSON(t, Credential{AccessToken: "at-old", RefreshToken: "rt-old", AccountID: "acc"})
+	if _, err := p.Refresh(context.Background(), cred); err == nil {
+		t.Fatal("expected an error for a response without access_token")
+	}
+}
+
 func TestRefreshKeepsOldRefreshTokenWhenAbsent(t *testing.T) {
 	script := &refreshScript{t: t, handler: func(string) (int, string) {
 		return 200, `{"access_token":"at-new"}`

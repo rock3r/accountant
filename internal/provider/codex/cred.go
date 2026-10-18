@@ -164,9 +164,12 @@ func (p *Provider) refresh(ctx context.Context, cred Credential) (Credential, er
 		if err := json.Unmarshal(respBody, &rr); err != nil {
 			return Credential{}, &provider.RefreshError{Message: "refresh: unparseable token response"}
 		}
-		if rr.AccessToken != nil && *rr.AccessToken != "" {
-			cred.AccessToken = *rr.AccessToken
+		if rr.AccessToken == nil || *rr.AccessToken == "" {
+			// Without a new access token the old (near-expiry) one would
+			// be persisted as a "successful" refresh; refuse instead.
+			return Credential{}, &provider.RefreshError{Message: "refresh: token response has no access token"}
 		}
+		cred.AccessToken = *rr.AccessToken
 		if rr.RefreshToken != nil && *rr.RefreshToken != "" {
 			cred.RefreshToken = *rr.RefreshToken
 		}

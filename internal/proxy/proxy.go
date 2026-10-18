@@ -107,6 +107,16 @@ func (p *Proxy) route(w http.ResponseWriter, r *http.Request) {
 		providerID = "codex"
 		path = "/" + rest
 	}
+	if providerID == "" {
+		// Resolve the default provider before validating the route: the
+		// accepted shape depends on it.
+		cfg, err := config.Load(p.cfgPath)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "api_error", "invalid configuration")
+			return
+		}
+		providerID = cfg.DefaultProvider
+	}
 	var served bool
 	switch providerID {
 	case "codex":
@@ -120,14 +130,6 @@ func (p *Proxy) route(w http.ResponseWriter, r *http.Request) {
 	if !served {
 		writeAPIError(w, http.StatusNotFound, "not_found_error", "unknown path")
 		return
-	}
-	if providerID == "" {
-		cfg, err := config.Load(p.cfgPath)
-		if err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "api_error", "invalid configuration")
-			return
-		}
-		providerID = cfg.DefaultProvider
 	}
 	p.serve(w, r, providerID, path)
 }
