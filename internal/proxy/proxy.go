@@ -221,6 +221,12 @@ func (p *Proxy) serve(w http.ResponseWriter, r *http.Request, providerID, path s
 		// failure also takes the account out of rotation.
 		cred, err = p.refreshIfNeeded(r.Context(), prov, acct, cred)
 		if err != nil {
+			if r.Context().Err() != nil {
+				// The caller went away (or its deadline hit) while waiting
+				// on the refresh: nothing can be served, and failing over
+				// would re-pin the session for an abandoned request.
+				return
+			}
 			var rerr *provider.RefreshError
 			permanent := errors.As(err, &rerr) && rerr.Permanent
 			if permanent {
