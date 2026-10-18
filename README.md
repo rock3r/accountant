@@ -28,11 +28,12 @@ solely responsible for anything you do with it.
   (5xx, network) never fail over.
 - Quota state comes from `anthropic-ratelimit-unified-*` response headers —
   no usage-endpoint dependency (setup-tokens lack the scope for it; see S1).
-- Tokens live in the macOS Keychain (service `accountant`); on Linux the
-  file vault (a `0700` directory of `0600` files, enforced) is used
-  instead. Config holds metadata only — never a token. Client keys are
-  stored as SHA-256 hashes. See `docs/remote-deploy.md` for Linux/systemd
-  deployment.
+- Tokens live in the macOS Keychain (service `accountant`); on Linux
+  the freedesktop Secret Service — any provider: gnome-keyring
+  standalone, KWallet, KeePassXC — or, on headless boxes, a
+  permission-enforced file vault (`0700` dir of `0600` files). Config
+  holds metadata only — never a token. Client keys are stored as SHA-256
+  hashes. See `docs/remote-deploy.md` for Linux/systemd deployment.
 
 ## Install
 

@@ -9,11 +9,16 @@ Threat model, stated plainly:
 
 - By default accountant binds `127.0.0.1` only. Local attackers are the
   perimeter; don't expose the port directly.
-- Credentials on Linux live in a **file vault**: a `0700` directory of
-  `0600` files under `~/.local/state/accountant/vault`. Permissions are
-  enforced, not assumed — a loose file is refused, not served. On macOS
-  the Keychain backend is used instead; nothing is shared between the
-  two machines.
+- Credentials on Linux live in the **Secret Service** — the freedesktop
+  standard (`org.freedesktop.secrets`), not any desktop's property. Any
+  provider works: gnome-keyring running standalone (a few MB, no GNOME
+  desktop), KWallet, or KeePassXC. This is the closest Linux equivalent
+  of the macOS Keychain: encrypted at rest, unlocked by your login.
+- Headless boxes that never see a login use the **file vault** instead: a
+  `0700` directory of `0600` files under `~/.local/state/accountant/vault`,
+  permissions enforced, not assumed — a loose file is refused, not
+  served. Neither machine can read the other's vault; accounts must be
+  re-imported per box.
 - If you expose accountant remotely, it must only ever be through the
   Cloudflare tunnel with a Cloudflare Access **service token** in front
   (Part B). The proxy requires its client key too, so an attacker needs
@@ -45,15 +50,35 @@ Create `~/.config/accountant/config.toml`:
 ```toml
 listen = "127.0.0.1:8787"
 default_provider = "anthropic"
-# vault_backend defaults to "auto": file vault on Linux, Keychain on macOS.
-# vault_dir defaults to ~/.local/state/accountant/vault.
-vault_backend = "file"
+# vault_backend defaults to "auto": Keychain on macOS, Secret Service on
+# Linux, file vault where neither exists. Set explicitly if you want to
+# pin it:
+#   vault_backend = "secret-service"   # any org.freedesktop.secrets provider
+#   vault_backend = "file"             # headless; vault_dir defaults to
+#                                      # ~/.local/state/accountant/vault
+vault_backend = "secret-service"
 
 [[accounts]]
 id = "primary"
 provider = "anthropic"
 priority = 10
 ```
+
+**Secret Service providers** (pick one; `auto` uses whichever answers
+on the session bus):
+
+| Provider | Install | Notes |
+| --- | --- | --- |
+| gnome-keyring (standalone) | `sudo apt install gnome-keyring` / `sudo pacman -S gnome-keyring` | no GNOME desktop needed; enable `systemctl --user enable --now gnome-keyring-daemon.socket` (D-Bus activation) or `exec-once = gnome-keyring-daemon --start --components=secrets` in a WM config |
+| KWallet | ships with KDE | speaks org.freedesktop.secrets since KWallet 5.97 |
+| KeePassXC | enable its Secret Service integration | good if you already run it |
+
+**Unlock lifecycle**: the collection unlocks at PAM login, like the
+macOS login Keychain. After a reboot, the daemon can read credentials
+once you (or auto-login) have logged in; `loginctl enable-linger $USER`
+keeps the session — and the unlocked keyring — alive across logouts. If
+you see "Secret Service unavailable or locked", that is this, not a
+bug.
 
 Fix permissions — `doctor` will nag until you do, and the vault refuses
 to run otherwise:
@@ -156,6 +181,10 @@ node integrations/update-catalog.mjs     # refresh local Pi extensions if used
   files, or delete and re-add the credential.
 - **`vault_backend "keychain" requires macOS`** — explicit keychain
   selection on Linux; drop the line to use `auto`.
+- **"Secret Service unavailable or locked"** — no provider on the
+  session bus, or the keyring is locked (no login since boot). Install a
+  provider (table above), log in once, or switch to
+  `vault_backend = "file"` on headless boxes.
 - **Credential not found** — the file vault is per-machine; accounts must
   be re-added on this box (`accountant account add`). Config files can be
   copied; vaults cannot.

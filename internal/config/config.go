@@ -45,7 +45,8 @@ type Config struct {
 	ResponseHeaderTimeoutSeconds int    `toml:"response_header_timeout_seconds"`
 	UtilizationScale             string `toml:"utilization_scale"`
 	// VaultBackend selects the credential store: "auto" (Keychain on
-	// macOS, file vault elsewhere), "keychain", or "file".
+	// macOS, Secret Service on Linux, file vault elsewhere),
+	// "keychain", "secret-service", or "file".
 	VaultBackend string `toml:"vault_backend"`
 	// VaultDir is the file-vault root; empty means <state dir>/vault.
 	VaultDir string    `toml:"vault_dir"`
@@ -85,9 +86,9 @@ func (c *Config) Normalize() error {
 		return fmt.Errorf("utilization_scale must be %q or %q, got %q", "fraction", "percent", c.UtilizationScale)
 	}
 	switch c.VaultBackend {
-	case "", "auto", "keychain", "file":
+	case "", "auto", "keychain", "secret-service", "file":
 	default:
-		return fmt.Errorf("vault_backend must be %q, %q or %q, got %q", "auto", "keychain", "file", c.VaultBackend)
+		return fmt.Errorf("vault_backend must be %q, %q, %q or %q, got %q", "auto", "keychain", "secret-service", "file", c.VaultBackend)
 	}
 	seen := map[string]bool{}
 	for i := range c.Accounts {

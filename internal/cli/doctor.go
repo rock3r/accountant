@@ -96,11 +96,7 @@ func cmdDoctor(paths config.Paths, stdout, stderr io.Writer) int {
 		report(false, false, "vault: %v", verr)
 		return 1
 	}
-	backend := cfg.VaultBackend
-	if backend == "" {
-		backend = "auto"
-	}
-	report(true, false, "vault backend %q selected", backend)
+	report(true, false, "vault backend %q selected (config: %q)", vaultBackendName(paths), cfg.VaultBackend)
 	kc := v
 	for _, a := range cfg.Accounts {
 		if !a.IsEnabled() {

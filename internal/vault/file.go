@@ -59,8 +59,8 @@ func NewFile(dir string) (*File, error) {
 }
 
 func (f *File) path(ref string) (string, error) {
-	if !safeFileRef.MatchString(ref) {
-		return "", fmt.Errorf("vault: unsafe credential ref")
+	if err := validateRef(ref); err != nil {
+		return "", err
 	}
 	return filepath.Join(f.dir, ref), nil
 }
@@ -96,9 +96,6 @@ func (f *File) Get(ref string) ([]byte, error) {
 // fully written, synced, and renamed over the target, so readers see
 // either the whole previous value or the whole new one.
 func (f *File) Put(ref string, secret []byte) error {
-	if len(ref) > maxFileRefLen {
-		return fmt.Errorf("vault: credential ref too long")
-	}
 	p, err := f.path(ref)
 	if err != nil {
 		return err
