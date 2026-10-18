@@ -28,29 +28,6 @@ func providerFor(id string) provider.Provider {
 // cliRefreshMargin mirrors the proxy's proactive-refresh margin.
 const cliRefreshMargin = 30 * time.Minute
 
-// refreshIfExpiring refreshes a credential whose provider reports an expiry
-// within cliRefreshMargin. Non-expiring providers (and credentials without
-// a readable expiry) come back unchanged.
-func refreshIfExpiring(ctx context.Context, prov provider.Provider, cred []byte) (out []byte, refreshed bool, err error) {
-	exp, ok := prov.(provider.CredentialExpirer)
-	if !ok {
-		return cred, false, nil
-	}
-	expiry, ok := exp.CredentialExpiry(cred)
-	if !ok || expiry.After(time.Now().Add(cliRefreshMargin)) {
-		return cred, false, nil
-	}
-	refresher, ok := prov.(provider.Refresher)
-	if !ok {
-		return cred, false, nil
-	}
-	newCred, err := refresher.Refresh(ctx, cred)
-	if err != nil {
-		return nil, false, err
-	}
-	return newCred, true, nil
-}
-
 // ensureFreshCredential refreshes an expiring credential and persists the
 // result to the vault before returning it. The read-refresh-write cycle
 // runs under the shared per-credential lock, so it cannot race a refresh
