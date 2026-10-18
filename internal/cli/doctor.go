@@ -12,7 +12,6 @@ import (
 	"accountant/internal/config"
 	"accountant/internal/provider"
 	"accountant/internal/provider/anthropic"
-	"accountant/internal/vault"
 )
 
 // cmdDoctor runs health checks: file permissions, token test per account,
@@ -92,7 +91,13 @@ func cmdDoctor(paths config.Paths, stdout, stderr io.Writer) int {
 
 	// Per-account credential check, provider-aware; expiring credentials
 	// (Codex OAuth) are refreshed first.
-	kc := vault.NewKeychain()
+	v, verr := openVault(paths)
+	if verr != nil {
+		report(false, false, "vault: %v", verr)
+		return 1
+	}
+	report(true, false, "vault backend %q selected (config: %q)", vaultBackendName(paths), cfg.VaultBackend)
+	kc := v
 	for _, a := range cfg.Accounts {
 		if !a.IsEnabled() {
 			continue

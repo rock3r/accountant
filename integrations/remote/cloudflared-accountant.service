@@ -1,0 +1,31 @@
+[Unit]
+Description=cloudflared — accountant tunnel (named tunnel to 127.0.0.1:8787)
+Documentation=https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+After=network-online.target accountant.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+# The tunnel and its ingress rule are defined in the config file created
+# during setup (see docs/remote-deploy.md):
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --config %h/.cloudflared/accountant.yml run accountant-tunnel
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.cloudflared
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

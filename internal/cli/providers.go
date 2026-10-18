@@ -10,7 +10,6 @@ import (
 	"accountant/internal/provider/anthropic"
 	"accountant/internal/provider/codex"
 	"accountant/internal/refresh"
-	"accountant/internal/vault"
 )
 
 // providerFor returns the CLI-side provider implementation by ID, or nil.
@@ -45,7 +44,11 @@ func ensureFreshCredential(ctx context.Context, prov provider.Provider, paths co
 	if _, ok := prov.(provider.Refresher); !ok {
 		return cred, false, nil
 	}
-	out, refreshed, err = refresh.IfNeeded(ctx, vault.NewKeychain(), prov, paths.StateFile, ref, cliRefreshMargin)
+	v, verr := openVault(paths)
+	if verr != nil {
+		return nil, false, fmt.Errorf("opening vault: %w", verr)
+	}
+	out, refreshed, err = refresh.IfNeeded(ctx, v, prov, paths.StateFile, ref, cliRefreshMargin)
 	if err != nil {
 		return nil, false, fmt.Errorf("credential refresh failed: %w", err)
 	}
