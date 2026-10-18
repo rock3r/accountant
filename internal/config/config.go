@@ -39,13 +39,18 @@ type Client struct {
 
 // Config is the root of config.toml.
 type Config struct {
-	Listen                       string    `toml:"listen"`
-	DefaultProvider              string    `toml:"default_provider"`
-	RequestBodyLimitMiB          int64     `toml:"request_body_limit_mib"`
-	ResponseHeaderTimeoutSeconds int       `toml:"response_header_timeout_seconds"`
-	UtilizationScale             string    `toml:"utilization_scale"`
-	Accounts                     []Account `toml:"accounts"`
-	Clients                      []Client  `toml:"clients"`
+	Listen                       string `toml:"listen"`
+	DefaultProvider              string `toml:"default_provider"`
+	RequestBodyLimitMiB          int64  `toml:"request_body_limit_mib"`
+	ResponseHeaderTimeoutSeconds int    `toml:"response_header_timeout_seconds"`
+	UtilizationScale             string `toml:"utilization_scale"`
+	// VaultBackend selects the credential store: "auto" (Keychain on
+	// macOS, file vault elsewhere), "keychain", or "file".
+	VaultBackend string `toml:"vault_backend"`
+	// VaultDir is the file-vault root; empty means <state dir>/vault.
+	VaultDir string    `toml:"vault_dir"`
+	Accounts []Account `toml:"accounts"`
+	Clients  []Client  `toml:"clients"`
 }
 
 // Defaults applied when fields are absent.
@@ -78,6 +83,11 @@ func (c *Config) Normalize() error {
 	case "fraction", "percent":
 	default:
 		return fmt.Errorf("utilization_scale must be %q or %q, got %q", "fraction", "percent", c.UtilizationScale)
+	}
+	switch c.VaultBackend {
+	case "", "auto", "keychain", "file":
+	default:
+		return fmt.Errorf("vault_backend must be %q, %q or %q, got %q", "auto", "keychain", "file", c.VaultBackend)
 	}
 	seen := map[string]bool{}
 	for i := range c.Accounts {

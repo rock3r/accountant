@@ -18,7 +18,6 @@ import (
 	"accountant/internal/provider/codex"
 	"accountant/internal/proxy"
 	"accountant/internal/router"
-	"accountant/internal/vault"
 )
 
 func cmdServe(_ []string, paths config.Paths, stderr io.Writer) int {
@@ -35,7 +34,12 @@ func cmdServe(_ []string, paths config.Paths, stderr io.Writer) int {
 		"anthropic": anthropic.New(""),
 		"codex":     codex.New(""),
 	}
-	px := proxy.New(paths.ConfigFile, paths.StateFile, rt, vault.NewKeychain(), providers, log)
+	v, err := openVault(paths)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return 1
+	}
+	px := proxy.New(paths.ConfigFile, paths.StateFile, rt, v, providers, log)
 
 	srv := &http.Server{
 		Addr:    cfg.Listen,

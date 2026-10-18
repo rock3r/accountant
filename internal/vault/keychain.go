@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -101,11 +100,8 @@ func parseChunkHead(v string) (chunkHead, bool) {
 	return chunkHead{gen: gen, count: cnt}, true
 }
 
-// safeToken restricts refs to characters that are safe to embed in a
-// double-quoted `security -i` command line. Secrets are hex-encoded before
-// storage (they can be structured JSON, e.g. Codex OAuth credentials), so
-// they are always inside this set by construction.
-var safeToken = regexp.MustCompile(`^[A-Za-z0-9._~+/=@:-]+$`)
+// safeToken now lives in refs.go (shared with the file backend's
+// stricter set).
 
 // Keychain is the macOS Keychain vault backend.
 type Keychain struct{}

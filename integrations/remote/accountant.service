@@ -1,0 +1,40 @@
+[Unit]
+Description=accountant — subscription rollover proxy
+Documentation=file:%h/.config/accountant/docs/remote-deploy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/accountant serve
+Restart=on-failure
+RestartSec=3
+
+# Environment overrides: point ACCOUNTANT_CONFIG/ACCOUNTANT_STATE at the
+# working copy instead of the defaults if you keep them elsewhere.
+Environment=ACCOUNTANT_CONFIG=%h/.config/accountant/config.toml
+Environment=ACCOUNTANT_STATE=%h/.local/state/accountant/state.json
+
+# Logging goes to the journal; `journalctl --user-unit accountant -f`.
+StandardOutput=journal
+StandardError=journal
+
+# --- Hardening (vault credentials live under the state dir) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/accountant
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target

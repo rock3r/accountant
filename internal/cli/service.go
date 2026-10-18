@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"accountant/internal/config"
@@ -27,6 +28,9 @@ func cmdService(args []string, paths config.Paths, stdout, stderr io.Writer) int
 }
 
 func plistPath() (string, error) {
+	if runtime.GOOS != "darwin" {
+		return "", fmt.Errorf("service install manages the macOS launchd agent; on Linux use the systemd unit in integrations/remote/ (see docs/remote-deploy.md)")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err

@@ -1,0 +1,12 @@
+# cloudflared config for the accountant tunnel — see docs/remote-deploy.md.
+# Created by: cloudflared tunnel create accountant-tunnel
+# Routed by:  cloudflared tunnel route dns accountant-tunnel <hostname>
+tunnel: accountant-tunnel
+# Path is printed by `cloudflared tunnel create` (<tunnel-id>.json).
+credentials-file: /home/USER/.cloudflared/<TUNNEL-ID>.json
+
+ingress:
+  # The only exposed hostname; everything else is refused (404).
+  - hostname: accountant.EXAMPLE.COM
+    service: http://127.0.0.1:8787
+  - service: not_found
