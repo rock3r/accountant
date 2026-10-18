@@ -148,7 +148,8 @@ node integrations/update-catalog.mjs --check    # fail if the committed catalog 
 ```
 
 `integrations/catalog.json` holds the same raw upstream payloads for client
-integrations that cannot do live discovery (Amp, others).
+integrations that cannot do live discovery (Amp, others) — the Amp router
+wiring is sketched in `docs/remote-deploy.md`, Part C.
 
 ## Connect Codex (ChatGPT subscriptions)
 

@@ -153,17 +153,79 @@ sudo apt update && sudo apt install cloudflared
 
 ## Part C — optional: Amp routers
 
-With Part B in place, create the two Amp custom-url routers (Amp stores
-connections in its account and requires HTTPS, hence the tunnel):
+With Part B in place, Amp can route through accountant via two
+`custom-url` routers (Amp stores connections in its account and only
+accepts HTTPS base URLs, hence the tunnel):
+
+| router             | mount       | api-format          | mapping source     |
+|--------------------|-------------|---------------------|--------------------|
+| `accountant-codex` | `/codex`    | `responses`         | `openai/<slug>`    |
+| `accountant-claude`| `/anthropic`| `anthropic-messages`| `anthropic/<id>`   |
+
+The model mapping is exact per model with an override, e.g.
+`openai/gpt-6-astra -> gpt-6-astra`: Amp knows models by prefixed name,
+accountant passes the model string through to the upstream API, and the
+upstreams want the bare id — the override bridges the two. The lists
+come from `integrations/catalog.json` (see Part D).
+
+### How Amp picks a router
+
+Connections are tried in priority order (0 first); the first *active*
+connection whose model mapping includes the model serves it. Check the
+incumbents with `amp config model-providers list` — typically a native
+ChatGPT subscription (serves `openai/*`), possibly an existing
+custom-url router in front of another proxy, and an API-key fallback.
+Decide where accountant should sit *before* activating it.
+
+### Creating the routers (staged)
+
+The script emits both `add-router custom-url` commands with the
+Cloudflare Access service-token headers (`CF_ACCESS_CLIENT_ID` /
+`CF_ACCESS_CLIENT_SECRET`) plus the accountant client key. A dry run
+prints them with the secrets redacted:
 
 ```sh
-CF_ACCESS_CLIENT_ID=... CF_ACCESS_CLIENT_SECRET=... \
-ACCOUNTANT_CLIENT_KEY=... \
+CF_ACCESS_CLIENT_ID=... CF_ACCESS_CLIENT_SECRET=... ACCOUNTANT_CLIENT_KEY=... \
 node integrations/amp/amp-router.mjs --url https://accountant.example.com --personal
-# looks right? add --apply
+# looks right? add --apply (still creates them INACTIVE)
 ```
 
-Amp priority vs existing routers is managed in Amp's own account UI.
+Then slot them in deliberately, with the ids from
+`amp config model-providers list`:
+
+```sh
+amp config model-providers set-priority <id> <n>   # before the incumbents, or after
+amp config model-providers activate <id>
+```
+
+`--workspace` instead of `--personal` puts them in the workspace
+account; `--rename old:new` handles a model Amp knows under a different
+name; `--activate` skips the staging if you already know the priority.
+
+### Verifying
+
+```sh
+amp config model-providers check-access --provider-model openai/gpt-6-astra
+amp config model-providers check-access --provider-model anthropic/claude-sonnet-5-5
+```
+
+Each runs a small inference through whichever connection serves the
+model and prints the winner as JSON — it must name the accountant router
+(and a request through accountant lands in its logs/`status`).
+
+### Rotation and rollback
+
+- `amp config model-providers deactivate <id>` parks a router without
+  deleting it; `… delete <id>` removes it entirely.
+- Both secrets (Access service token, client key) travel in the router
+  headers and are stored in Amp's account server-side. To rotate: rotate
+  the underlying secret, `delete` both routers, re-run the script with
+  `--apply`, re-set priorities.
+- After a catalog refresh (Part D) changes the model list, re-apply the
+  same way so the mapping picks up new models.
+- **Careful**: `amp config model-providers show <id>` prints header
+  **values** despite saying "non-secret" — scrub before pasting its
+  output anywhere.
 
 ## Part D — updates
 

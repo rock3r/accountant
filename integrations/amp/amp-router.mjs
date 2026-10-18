@@ -11,22 +11,25 @@
  *
  * This script reads integrations/catalog.json (the raw model lists
  * fetched by update-catalog.mjs) and emits the two
- * `amp config model-providers add-router` commands with:
+ * `amp config model-providers add-router custom-url` commands with:
  *
- *   - an identity model mapping for every catalog model (rename with
- *     --rename old:new if Amp's account shows a different name), and
+ *   - an exact `provider/model -> model` mapping for every catalog
+ *     model, so Amp's prefixed name (anthropic/claude-…, openai/gpt-…)
+ *     is rewritten to the bare id accountant passes upstream, and
  *   - the Cloudflare Access service-token headers taken from the
  *     CF_ACCESS_CLIENT_ID / CF_ACCESS_CLIENT_SECRET environment
  *     variables (never stored in the repo).
  *
  * Usage:
  *   node integrations/amp/amp-router.mjs --url https://accountant.example.com \
- *          --personal [--rename old:new ...] [--apply]
+ *          --personal [--rename old:new ...] [--activate] [--apply]
  *
  *   --url       the public HTTPS hostname fronting accountant
  *   --personal | --workspace   which Amp account the routers land in
  *   --rename    a:b renames model a (as Amp knows it) to b (as served);
  *               repeatable; identity mappings are still emitted for the rest
+ *   --activate  activate the routers at creation (default: created
+ *               inactive, so priority can be set before activation)
  *   --apply     run the commands instead of printing them (secrets are
  *               printed redacted otherwise)
  *
@@ -50,12 +53,13 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  const out = { renames: new Map(), apply: false, scope: null, url: null };
+  const out = { renames: new Map(), apply: false, activate: false, scope: null, url: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--url") out.url = argv[++i];
     else if (a === "--personal") out.scope = a.slice(2);
     else if (a === "--workspace") out.scope = a.slice(2);
+    else if (a === "--activate") out.activate = true;
     else if (a === "--apply") out.apply = true;
     else if (a === "--rename") {
       const [from, to] = (argv[++i] ?? "").split(":");
@@ -95,12 +99,15 @@ function accessHeaders() {
   ];
 }
 
-// Identity mapping for one provider's models, plus explicit renames.
-function modelMapping(models, renames, key) {
+// Exact mapping for one provider's models. Amp knows models as
+// `provider/model`; accountant passes the model string through to the
+// upstream API, which wants the bare id — hence the -> override per
+// model (Amp only allows overrides on exact ids, not patterns).
+function modelMapping(models, renames, prefix, key) {
   const pairs = [];
   for (const m of models) {
     const id = m[key];
-    pairs.push([renames.get(id) ?? id, id]);
+    pairs.push([`${prefix}/${renames.get(id) ?? id}`, id]);
   }
   return pairs;
 }
@@ -116,6 +123,7 @@ const routers = [
     baseURL: `${args.url}/codex`,
     models: catalog.codex,
     key: "slug",
+    prefix: "openai",
   },
   {
     name: "accountant-claude",
@@ -123,18 +131,21 @@ const routers = [
     baseURL: `${args.url}/anthropic`,
     models: catalog.anthropic,
     key: "id",
+    prefix: "anthropic",
   },
 ];
 
 for (const r of routers) {
-  const mapping = modelMapping(r.models, args.renames, r.key);
+  const mapping = modelMapping(r.models, args.renames, r.prefix, r.key);
   const mappingArg = mapping.map(([a, b]) => `${a} -> ${b}`).join(", ");
   const cmd = [
-    "amp", "config", "model-providers", "add-router", r.name,
-    "--custom-url", r.baseURL,
+    "amp", "config", "model-providers", "add-router", "custom-url",
+    "--name", r.name,
+    "--base-url", r.baseURL,
     "--api-format", r.apiFormat,
     "--model-mapping", mappingArg,
     "--headers", JSON.stringify(headers),
+    args.activate ? "--active" : "--no-active",
     `--${args.scope}`,
   ];
   if (args.apply) {
@@ -143,12 +154,13 @@ for (const r of routers) {
   } else {
     const redacted = cmd.map((c) =>
       c
-        .replace(/("CF-Access-Client-Secret","\w{4})\w+"/g, '$1…"')
-        .replace(/("Authorization","Bearer \w{4})\w+"/g, '$1…"'),
+        .replace(/("CF-Access-Client-Secret","[^"]{4})[^"]*"/g, '$1…"')
+        .replace(/("Authorization","Bearer [^"]{4})[^"]*"/g, '$1…"'),
     );
     console.log(redacted.join(" ") + "\n");
   }
 }
 if (!args.apply) {
-  console.log("dry run: re-run with --apply to create the routers in your Amp account");
+  console.log("dry run: routers would be created INACTIVE (add --activate to flip them on at creation;");
+  console.log("set priority with `amp config model-providers set-priority <id> <n>`, then `activate <id>`. Re-run with --apply to create them.)");
 }
