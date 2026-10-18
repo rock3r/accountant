@@ -185,6 +185,16 @@ node integrations/update-catalog.mjs     # refresh local Pi extensions if used
   session bus, or the keyring is locked (no login since boot). Install a
   provider (table above), log in once, or switch to
   `vault_backend = "file"` on headless boxes.
+- **You cannot unlock a running keyring over ssh.** On modern
+  gnome-keyring (systemd socket activation), `gnome-keyring-daemon
+  --unlock` is a PAM startup mode, not a client command: run against a
+  running daemon it spawns a *second* daemon that swallows the password
+  and owns nothing. The supported unlock events are a console/GNOME
+  login (PAM) or a GUI prompt in an active graphical session. If a box
+  reboots unattended and nobody logs in, use `vault_backend = "file"`. If
+  a stray `--unlock` daemon has stolen `org.freedesktop.secrets`:
+  `pkill -f "gnome-keyring-daemon --unlock"; systemctl --user restart
+  gnome-keyring-daemon.service`.
 - **Credential not found** — the file vault is per-machine; accounts must
   be re-added on this box (`accountant account add`). Config files can be
   copied; vaults cannot.
