@@ -159,7 +159,7 @@ func parseCodexCredits(h http.Header) *provider.CreditSample {
 		hasCredits = strings.EqualFold(v, "true")
 	}
 	if b := strings.TrimSpace(h.Get("x-codex-credits-balance")); b != "" && hasCredits {
-		if f, err := strconv.ParseFloat(b, 64); err == nil {
+		if f, ok := provider.ParseFiniteFloat(b); ok {
 			cs.Balance = f
 			cs.HasBalance = true
 		}
@@ -177,7 +177,7 @@ func parseCodexWindow(h http.Header, prefix string) (provider.WindowSample, bool
 	var w provider.WindowSample
 	util := strings.TrimSpace(h.Get(prefix + "-used-percent"))
 	if util != "" {
-		if f, err := strconv.ParseFloat(util, 64); err == nil {
+		if f, ok := provider.ParseFiniteFloat(util); ok {
 			w.Utilization = f / 100 // percent upstream; fraction internally
 			w.HasUtilization = true
 			w.Normalized = true
@@ -209,7 +209,7 @@ func windowMinutes(h http.Header, key string) int64 {
 // parseResetTime accepts Unix epoch seconds (S4: what upstream sends) and
 // RFC 3339.
 func parseResetTime(v string) (time.Time, error) {
-	if secs, err := strconv.ParseFloat(v, 64); err == nil {
+	if secs, ok := provider.ParseFiniteFloat(v); ok {
 		whole := int64(secs)
 		frac := secs - float64(whole)
 		return time.Unix(whole, int64(frac*1e9)).UTC(), nil

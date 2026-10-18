@@ -489,3 +489,32 @@ func TestRefreshTransientFailure(t *testing.T) {
 		t.Errorf("expected transient RefreshError, got %v", err)
 	}
 }
+
+func TestQuotaFromResponseNonFiniteFloats(t *testing.T) {
+	// NaN/Inf are accepted by strconv.ParseFloat but rejected by
+	// json.Marshal; letting one into state would fail the whole state
+	// write (quota windows included). They must be ignored.
+	p := New("")
+	//nolint:bodyclose // synthetic response struct, not an HTTP call
+	snap, ok := p.QuotaFromResponse(headerResp(map[string]string{
+		"x-codex-plan-type":                "pro",
+		"x-codex-credits-balance":          "NaN",
+		"x-codex-credits-has-credits":      "true",
+		"x-codex-primary-used-percent":     "Infinity",
+		"x-codex-primary-window-minutes":   "10080",
+		"x-codex-primary-reset-at":         "1e309",
+		"x-codex-rate-limit-reset-seconds": "+Inf",
+	}))
+	if !ok {
+		t.Fatal("expected snapshot despite non-finite junk")
+	}
+	if snap.Credits == nil || snap.Credits.HasBalance {
+		t.Errorf("NaN balance must be ignored: %+v", snap.Credits)
+	}
+	if snap.Credits.Plan != "pro" {
+		t.Errorf("plan must be kept: %+v", snap.Credits)
+	}
+	if snap.FiveHour.HasUtilization || snap.FiveHour.HasReset {
+		t.Errorf("Infinity window values must be ignored: %+v", snap.FiveHour)
+	}
+}

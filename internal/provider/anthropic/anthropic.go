@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -119,7 +118,7 @@ func parseWindow(h http.Header, utilKey, resetKey, statusKey string) (provider.W
 	var w provider.WindowSample
 	ok := false
 	if v := h.Get(utilKey); v != "" {
-		if f, err := strconv.ParseFloat(strings.TrimSpace(v), 64); err == nil {
+		if f, finite := provider.ParseFiniteFloat(strings.TrimSpace(v)); finite {
 			w.Utilization = f
 			w.HasUtilization = true
 			ok = true
@@ -146,7 +145,7 @@ func ParseResetTime(v string) (time.Time, error) {
 	if v == "" {
 		return time.Time{}, fmt.Errorf("empty reset time")
 	}
-	if secs, err := strconv.ParseFloat(v, 64); err == nil {
+	if secs, ok := provider.ParseFiniteFloat(v); ok {
 		whole := int64(secs)
 		frac := secs - float64(whole)
 		return time.Unix(whole, int64(frac*1e9)).UTC(), nil

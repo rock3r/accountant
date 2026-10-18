@@ -4,9 +4,23 @@ package provider
 
 import (
 	"context"
+	"math"
 	"net/http"
+	"strconv"
 	"time"
 )
+
+// ParseFiniteFloat parses a header float, rejecting NaN and infinities.
+// Those values are accepted by strconv.ParseFloat but rejected by
+// json.Marshal, so letting one through would fail the entire state-file
+// update (losing quota and cooldown data recorded in the same write).
+func ParseFiniteFloat(s string) (float64, bool) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, false
+	}
+	return f, true
+}
 
 // WindowSample is one quota window parsed from response headers.
 type WindowSample struct {
