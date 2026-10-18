@@ -12,10 +12,28 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
 const keychainService = "accountant"
+
+// security -i truncates input lines at ~4 KB, silently turning the
+// remainder into garbage commands. Hex payloads longer than maxInlineHex
+// are therefore split into numbered chunk items (ref.c1, ref.c2, …); the
+// head item then holds a short magic pointer instead of the payload.
+// Chunks are written before the head (the head is the commit point), and
+// any stale higher-numbered chunks are removed afterwards.
+const (
+	maxInlineHex = 3800
+	chunksMagic  = "acct1:chunks:"
+)
+
+// chunkRef names chunk i (1-based) of a chunked item. The suffix uses only
+// safeToken characters.
+func chunkRef(ref string, i int) string {
+	return fmt.Sprintf("%s.c%d", ref, i)
+}
 
 // safeToken restricts refs to characters that are safe to embed in a
 // double-quoted `security -i` command line. Secrets are hex-encoded before
@@ -32,6 +50,38 @@ func NewKeychain() *Keychain { return &Keychain{} }
 // Get reads the secret for ref. The secret appears on this process's stdout
 // pipe only.
 func (k *Keychain) Get(ref string) ([]byte, error) {
+	raw, err := k.getRaw(ref)
+	if err != nil {
+		return nil, err
+	}
+	// Chunked item: the head points at numbered chunk items holding the
+	// hex payload in pieces.
+	if n, ok := strings.CutPrefix(string(raw), chunksMagic); ok {
+		count, err := strconv.Atoi(n)
+		if err != nil || count < 1 || count > 1000 {
+			return nil, fmt.Errorf("vault: corrupt chunk pointer for %s", ref)
+		}
+		var buf bytes.Buffer
+		for i := 1; i <= count; i++ {
+			chunk, err := k.getRaw(chunkRef(ref, i))
+			if err != nil {
+				return nil, fmt.Errorf("vault: reading chunk %d of %s: %w", i, ref, err)
+			}
+			buf.Write(chunk)
+		}
+		if decoded, ok := decodeStored(buf.Bytes()); ok {
+			return decoded, nil
+		}
+		return nil, fmt.Errorf("vault: corrupt chunked payload for %s", ref)
+	}
+	if decoded, ok := decodeStored(raw); ok {
+		return decoded, nil
+	}
+	return raw, nil
+}
+
+// getRaw reads the stored value for ref without any decoding.
+func (k *Keychain) getRaw(ref string) ([]byte, error) {
 	if !safeToken.MatchString(ref) {
 		return nil, fmt.Errorf("vault: unsafe credential ref")
 	}
@@ -45,11 +95,7 @@ func (k *Keychain) Get(ref string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("keychain read failed for %s: %s", ref, strings.TrimSpace(errOut.String()))
 	}
-	raw := bytes.TrimRight(out.Bytes(), "\r\n")
-	if decoded, ok := decodeStored(raw); ok {
-		return decoded, nil
-	}
-	return raw, nil
+	return bytes.TrimRight(out.Bytes(), "\r\n"), nil
 }
 
 // decodeStored undoes Put's hex encoding. A value that is not canonical
@@ -69,7 +115,8 @@ func decodeStored(v []byte) ([]byte, bool) {
 // Put stores the secret for ref, updating an existing item. The secret is
 // hex-encoded first: structured credentials (Codex OAuth JSON) contain
 // characters that cannot be embedded safely, and lowercase hex is inside
-// the safe set by construction.
+// the safe set by construction. Payloads too long for one `security -i`
+// line are chunked (see maxInlineHex).
 func (k *Keychain) Put(ref string, secret []byte) error {
 	if !safeToken.MatchString(ref) {
 		return fmt.Errorf("vault: unsafe credential ref")
@@ -77,18 +124,51 @@ func (k *Keychain) Put(ref string, secret []byte) error {
 	if len(secret) == 0 {
 		return fmt.Errorf("vault: empty credential")
 	}
+	hexed := hex.EncodeToString(secret)
+	if len(hexed) <= maxInlineHex {
+		if err := k.putInline(ref, hexed); err != nil {
+			return err
+		}
+		k.deleteChunks(ref, 1)
+		return nil
+	}
+	// Write chunks first, the head last: the head is the commit point, so
+	// a reader either sees the whole old value or the whole new one (for a
+	// same-chunk-count rewrite). A rotation must never strand the only
+	// valid credential on a half-written item.
+	n := (len(hexed) + maxInlineHex - 1) / maxInlineHex
+	for i := 0; i < n; i++ {
+		hi := (i + 1) * maxInlineHex
+		if hi > len(hexed) {
+			hi = len(hexed)
+		}
+		if err := k.putInline(chunkRef(ref, i+1), hexed[i*maxInlineHex:hi]); err != nil {
+			return err
+		}
+	}
+	if err := k.putInline(ref, chunksMagic+strconv.Itoa(n)); err != nil {
+		return err
+	}
+	k.deleteChunks(ref, n+1)
+	return nil
+}
+
+// putInline writes one keychain item via `security -i`. The value must fit
+// in a single input line and contain only safeToken characters.
+func (k *Keychain) putInline(ref, value string) error {
 	// `security -i` reads commands from stdin; the secret travels through
 	// the pipe and never appears in the process argument list.
 	script := fmt.Sprintf("add-generic-password -s %s -a \"%s\" -w \"%s\" -U\n",
-		keychainService, ref, hex.EncodeToString(secret))
+		keychainService, ref, value)
 	cmd := exec.Command("security", "-i")
 	cmd.Stdin = strings.NewReader(script)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
-		// Never include the script (it contains the secret) in the error.
-		return errors.New("keychain write failed")
+		// Never include the script or output (they may contain the secret)
+		// in the error.
+		return fmt.Errorf("keychain write failed: %w", err)
 	}
 	if bytes.Contains(out.Bytes(), []byte("returned -")) {
 		return fmt.Errorf("keychain write failed: %s", sanitizeSecurityOutput(out.Bytes()))
@@ -96,7 +176,18 @@ func (k *Keychain) Put(ref string, secret []byte) error {
 	return nil
 }
 
-// Delete removes the item for ref.
+// deleteChunks removes chunk items ref.c<from>, ref.c<from+1>, … until the
+// first gap. Best effort: leftovers are unreachable once the head no
+// longer points at them.
+func (k *Keychain) deleteChunks(ref string, from int) {
+	for i := from; ; i++ {
+		if err := k.Delete(chunkRef(ref, i)); errors.Is(err, ErrNotFound) || i > from+1000 {
+			return
+		}
+	}
+}
+
+// Delete removes the item for ref, including any chunk items.
 func (k *Keychain) Delete(ref string) error {
 	if !safeToken.MatchString(ref) {
 		return fmt.Errorf("vault: unsafe credential ref")
@@ -110,6 +201,7 @@ func (k *Keychain) Delete(ref string) error {
 		}
 		return fmt.Errorf("keychain delete failed for %s: %s", ref, strings.TrimSpace(errOut.String()))
 	}
+	k.deleteChunks(ref, 1)
 	return nil
 }
 
