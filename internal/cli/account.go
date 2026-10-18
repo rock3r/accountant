@@ -114,7 +114,6 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 	}
 
 	var cred []byte
-	refreshed := false
 	switch provider {
 	case "anthropic":
 		var ok bool
@@ -144,12 +143,11 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 			cred = fresh
 			if didRefresh {
 				fmt.Fprintln(stdout, "Refreshed the OAuth tokens.")
-				refreshed = true
 			}
 		}
 	}
 	if err := prov.Validate(ctx, cred); err != nil {
-		cleanupFailedAdd(id, refreshed, stderr)
+		cleanupFailedAdd(id, provider, stderr)
 		fmt.Fprintf(stderr, "error: token validation failed: %v\n", err)
 		return 1
 	}
@@ -175,7 +173,7 @@ func accountAdd(args []string, paths config.Paths, stdout, stderr io.Writer) int
 		return nil
 	})
 	if err != nil {
-		cleanupFailedAdd(id, refreshed, stderr)
+		cleanupFailedAdd(id, provider, stderr)
 		fmt.Fprintf(stderr, "error: updating config: %v\n", err)
 		return 1
 	}
@@ -205,13 +203,14 @@ func generateAccountID(paths config.Paths, label string, stderr io.Writer) strin
 	}
 }
 
-// cleanupFailedAdd removes the vault entry for an account that never made it
-// into the config — unless a credential refresh already rotated its tokens:
-// then the rotated credential is all that remains of the login, so it is
-// preserved and a re-run of the same command resumes from it.
-func cleanupFailedAdd(id string, refreshed bool, stderr io.Writer) {
-	if refreshed {
-		fmt.Fprintf(stderr, "note: the rotated OAuth tokens are preserved in the Keychain under ref %q; re-running the same command resumes from them.\n", id)
+// cleanupFailedAdd removes the vault entry for an account that never made
+// it into the config. Codex entries are always preserved instead: the vault
+// holds the freshest rotated credential by construction (stored before
+// validation, rotated under the refresh lock), while the source auth.json
+// may already be stale. A re-run of the same command resumes from it.
+func cleanupFailedAdd(id, provider string, stderr io.Writer) {
+	if provider == "codex" {
+		fmt.Fprintf(stderr, "note: the OAuth tokens are preserved in the Keychain under ref %q; re-running the same command resumes from them.\n", id)
 		return
 	}
 	_ = vault.NewKeychain().Delete(id)
